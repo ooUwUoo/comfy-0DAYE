@@ -72,7 +72,7 @@ def _apply_color_match(target, ref, method, strength, mask_np=None):
     """对 target 做基于 ref 的颜色匹配。只处理 RGB 通道，alpha 不动。
 
     target / ref: [B, H, W, C] torch tensor, float32, 0~1
-    mask_np: [H, W] numpy float32，用于 Linear/Mean 采样（可选）
+    mask_np: [H, W] numpy float32，最终混合蒙版（1=重绘区），统计在蒙版外采样
     """
     if method == "none" or strength <= 0:
         return target
@@ -87,9 +87,14 @@ def _apply_color_match(target, ref, method, strength, mask_np=None):
         if m.ndim == 3:
             m = m[..., 0]
 
-        t_pixels = img[m > 0.1]
-        r_pixels = ref_img[m > 0.1]
-        if len(t_pixels) == 0 or len(r_pixels) == 0:
+        # 在蒙版"之外"采样：蒙版内是重新生成的内容，若拿它与原图蒙版区（被替换掉的旧内容）
+        # 做统计，会把新内容的颜色强行拉向旧内容，像罩了一层色罩。正确锚点是蒙版外未被
+        # 改动的周边——测出生成相对原图的整体色漂，再把校正应用到整幅裁剪图。
+        outside = m < 0.1
+        t_pixels = img[outside]
+        r_pixels = ref_img[outside]
+        if len(t_pixels) < 16 or len(r_pixels) < 16:
+            # 蒙版几乎占满裁剪图，没有可锚定的周边，跳过校正
             out.append(t[i])
             continue
 
@@ -109,7 +114,11 @@ def _apply_color_match(target, ref, method, strength, mask_np=None):
                 ref_resized = cv2.resize(ref_img, (img.shape[1], img.shape[0]))
             else:
                 ref_resized = ref_img
-            corrected = _apply_wavelet_easy_np(img, ref_resized)
+            # 蒙版区是重新生成的内容：ref 的蒙版区换成生成图再做低频迁移，
+            # 否则旧内容的低频色块会重新罩回新内容上
+            m3 = m[..., None] if m.ndim == 2 else m
+            ref_for_low = m3 * img + (1.0 - m3) * ref_resized
+            corrected = _apply_wavelet_easy_np(img, ref_for_low)
         else:
             corrected = img.copy()
 
@@ -332,7 +341,6 @@ class SplitInpaint(io.ComfyNode):
 
             # 颜色匹配参考：取原始输入图同位置，避免被前面已重绘块污染
             orig_crop = image[:, y0:y1, x0:x1, :]
-            match_mask = region_mask.copy()
 
             # 蒙版膨胀
             if mask_expand > 0:
@@ -354,29 +362,31 @@ class SplitInpaint(io.ComfyNode):
                 crop_img.movedim(-1, 1), target_w, target_h, "lanczos", "disabled"
             ).movedim(1, -1)
 
-            # 2.5 参考图对齐到约 1MP（与 TextEncodeQwenImage21 的参考图规格一致）
-            # 注意：参考图分辨率与采样画布解耦——采样画布由 guide_size 决定（上面的
-            # target_w/target_h），参考图固定 ~1MP。两者尺寸独立，官方工作流同样如此。
-            resolution = 1024
+            # 2.5 参考潜变量与采样画布同网格：直接用画布尺寸的裁剪图编码。
+            # DiT 全局注意力对网格一致性极敏感——参考图若缩到别的尺寸（如旧版对齐 ~1MP），
+            # 模型需跨网格缩放"照抄"周边内容，会产生边缘大、中心小的缩放型偏移；
+            # 官方整图工作流也正是让输出 latent 与参考图 latent 同尺寸。
+            crop_latent = vae.encode(resized_img)
+            # 采样画布 latent：与参考同一编码结果（编辑模式只取 zeros_like 形状，图生图模式直接作起点）
+            canvas_latent = crop_latent
+
+            # 视觉塔输入仍对齐约 1MP（与 TextEncodeQwenImage21 一致，控制视觉 token 开销；
+            # VL 特征只提供语义，不参与输出网格对齐）
             samples = resized_img.movedim(-1, 1)
             ratio = samples.shape[3] / samples.shape[2]
-            ref_w = round(math.sqrt(resolution * resolution * ratio) / 32) * 32
-            ref_h = round(math.sqrt(resolution * resolution / ratio) / 32) * 32
+            ref_w = round(math.sqrt(1024 * 1024 * ratio) / 32) * 32
+            ref_h = round(math.sqrt(1024 * 1024 / ratio) / 32) * 32
             ref_w, ref_h = max(32, ref_w), max(32, ref_h)
-
             if (ref_w, ref_h) == (samples.shape[3], samples.shape[2]):
-                ref_img = resized_img
+                vl_img = resized_img
             else:
-                ref_img = comfy.utils.common_upscale(
+                vl_img = comfy.utils.common_upscale(
                     samples, ref_w, ref_h, "lanczos", "disabled"
                 ).movedim(1, -1)
 
-            rgb = ref_img[:, :, :, :3]
-            if ref_img.shape[-1] > 3:
-                rgb = rgb * ref_img[:, :, :, 3:] + (1.0 - ref_img[:, :, :, 3:])  # 视觉塔看alpha叠白底，VAE保留4通道
-            crop_latent = vae.encode(ref_img)
-            # 采样画布 latent：按 guide_size 画布编码一次拿形状（编辑模式取零张量，图生图模式直接用）
-            canvas_latent = vae.encode(resized_img)
+            rgb = vl_img[:, :, :, :3]
+            if vl_img.shape[-1] > 3:
+                rgb = rgb * vl_img[:, :, :, 3:] + (1.0 - vl_img[:, :, :, 3:])  # 视觉塔看alpha叠白底，VAE保留4通道
 
             # 2.6 起始 latent 与参考条件（通道数/尺寸全部由编码结果推导，不硬编码）
             if img2img_mode:
@@ -387,7 +397,7 @@ class SplitInpaint(io.ComfyNode):
                 images_vl = []
             else:
                 # 编辑模式：零张量起点 + 裁剪图作为 in-context 参考（denoise 应为 1.0）
-                # 画布尺寸=guide_size（生成精度），参考图=~1MP（官方规格），两者解耦。
+                # 参考潜变量与画布同尺寸同网格（见 2.5），保证 DiT 位置一一对应、消除缩放型偏移
                 # 用 zeros_like 而不是手写形状：Krea2 / Anima 等 Wan21 系 VAE 会返回 5D latent，
                 # 手写 [1, c, h, w] 会造出错误形状。
                 latent = torch.zeros_like(
@@ -449,11 +459,11 @@ class SplitInpaint(io.ComfyNode):
             if mask_t.ndim == 2:
                 mask_t = mask_t.unsqueeze(-1)
 
-            # 2.9 颜色匹配（只处理 RGB，alpha 不动）
+            # 2.9 颜色匹配（只处理 RGB，alpha 不动；传入膨胀+羽化后的最终蒙版，统计在蒙版外采样）
             if color_match != "none" and color_strength > 0:
                 ref_crop = orig_crop if orig_crop.shape[-1] <= 3 else orig_crop[..., :3]
                 decoded_resized = _apply_color_match(
-                    decoded_resized, ref_crop, color_match, color_strength, mask_np=match_mask
+                    decoded_resized, ref_crop, color_match, color_strength, mask_np=region_mask
                 )
 
             # 2.10 混合贴回（RGBA 模式下 alpha 通道一起被混合，由模型原生重绘）
