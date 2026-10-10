@@ -1,4 +1,5 @@
 import math
+import re
 import torch
 import numpy as np
 import cv2
@@ -143,8 +144,16 @@ class SplitInpaint(io.ComfyNode):
                 io.Mask.Input("mask"),
                 io.String.Input("prompt", multiline=True, default=""),
                 io.String.Input("negative_prompt", multiline=True, default=""),
-                io.Combo.Input("profile", options=["极速轻绘(0.6MP)", "快速轻绘(1.0MP)", "日常均衡(1.4MP)", "小物精修(1.8MP)", "关联融合(2.3MP)", "极致画质(4.0MP)", "自定义"], default="日常均衡(1.4MP)",
-                               tooltip="采样画布预设（速度由画布大小决定，区域像素=画布/上下文倍数）：极速轻绘(0.6MP)长边768区域~512px，最省资源，适合SDXL等传统模型和快速试效果；快速轻绘(1.0MP)区域~512px；日常均衡(1.4MP)区域~760px，日常默认；小物精修(1.8MP)区域~1030px，适合首饰五官小物件；关联融合(2.3MP)区域~700px，上下文多，适合天空背景大区域；极致画质(4.0MP)区域~1575px，Qwen2.1原生2K，16GB显存建议不接额外参考图；自定义=使用下面两个滑条"),
+                io.Combo.Input("profile", options=[
+                                   "极速轻绘(0.6MP) [cf=1.5, gs=768]",
+                                   "快速轻绘(1.0MP) [cf=2.0, gs=1024]",
+                                   "日常均衡(1.4MP) [cf=1.6, gs=1216]",
+                                   "小物精修(1.8MP) [cf=1.3, gs=1344]",
+                                   "关联融合(2.3MP) [cf=2.2, gs=1536]",
+                                   "极致画质(4.0MP) [cf=1.3, gs=2048]",
+                                   "自定义"],
+                               default="日常均衡(1.4MP) [cf=1.6, gs=1216]",
+                               tooltip="采样画布预设（cf=上下文倍数，gs=画布长边；速度由gs决定，区域有效像素≈gs/cf）：极速=最省资源，适合SDXL等传统模型快速试效果；日常=默认；小物精修=首饰五官等小物件；关联融合=上下文多，适合天空背景大区域；极致画质=Qwen2.1原生2K，16GB显存建议不接额外参考图；自定义=使用下面两个滑条"),
                 io.Float.Input("context_factor", default=1.6, min=1.0, max=4.0, step=0.01,
                                tooltip="上下文扩展倍数，仅 profile=自定义 时生效"),
                 io.Int.Input("guide_size", default=1216, min=256, max=2048, step=32,
@@ -191,18 +200,12 @@ class SplitInpaint(io.ComfyNode):
 
         # 0. 应用参数预设（自定义时保留滑条值）
         # 速度只由 guide_size（画布大小）决定；区域有效像素 ≈ guide_size / context_factor
-        _PROFILES = {
-            "极速轻绘(0.6MP)": (1.5, 768),
-            "快速轻绘(1.0MP)": (2.0, 1024),
-            "日常均衡(1.4MP)": (1.6, 1216),
-            "小物精修(1.8MP)": (1.3, 1344),
-            "关联融合(2.3MP)": (2.2, 1536),
-            "极致画质(4.0MP)": (1.3, 2048),
-        }
-        if profile in _PROFILES:
-            context_factor, guide_size = _PROFILES[profile]
-            print(f"[Split Inpaint] 预设={profile} context_factor={context_factor} guide_size={guide_size}")
-            if profile == "极致画质(4.0MP)" and extra_refs:
+        # 预设数值直接编码在选项文本里（cf=/gs=），前端 JS 解析同一格式，单一数据源
+        m = re.match(r"^(.+?)\s*\[cf=([\d.]+),\s*gs=(\d+)\]$", profile)
+        if m:
+            context_factor, guide_size = float(m.group(2)), int(m.group(3))
+            print(f"[Split Inpaint] 预设={m.group(1)} context_factor={context_factor} guide_size={guide_size}")
+            if "极致画质" in profile and extra_refs:
                 n_extra = sum(1 for v in extra_refs.values() if v is not None)
                 if n_extra > 0:
                     print(f"[Split Inpaint] 提示：4MP 画布 + {n_extra} 张额外参考图，16GB 显存可能吃紧")
@@ -459,6 +462,10 @@ class SplitInpaint(io.ComfyNode):
             current_image[:, y0:y1, x0:x1, :] = blended
 
         return io.NodeOutput(current_image)
+
+
+# 前端 JS 扩展目录（profile 切换时同步 context_factor / guide_size 滑条显示）
+WEB_DIRECTORY = "./web"
 
 
 class SplitInpaintExtension(ComfyExtension):

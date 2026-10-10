@@ -68,7 +68,7 @@ Dynamic inputs `image_2` ~ `image_10` (official Autogrow style — connect one, 
 
 | Parameter | Default | Description |
 |---|---|---|
-| profile | 日常均衡(1.4MP) | Quality preset (see table above) |
+| profile | 日常均衡(1.4MP) [cf=1.6, gs=1216] | Quality preset (see table above); preset values are encoded in the option text and synced to the sliders by the frontend |
 | context_factor | 1.6 | Crop expansion factor (custom profile only) |
 | guide_size | 1216 | Sampling canvas long edge (custom profile only) |
 | crop_mode | 自动 | Crop shape (see table above) |
