@@ -96,16 +96,16 @@ Node that buffers the text output of upstream LLM nodes (prompt expansion / tran
 
 | Mode | Behavior |
 |---|---|
-| `auto` (default) | Priority: ① `override_text` non-empty → output & record it; ② upstream `text` non-empty → pass through & record; ③ otherwise (upstream muted / unconnected) → output `history[history_index]` |
-| `直通` (passthrough) | Always output upstream `text` (recorded when non-empty) |
+| `自动` (auto, default) | Priority: ① `override_text` non-empty → output & record it; ② upstream `text` non-empty → pass through & record; ③ otherwise (upstream muted / unconnected) → output `history[history_index]` |
+| `上游` (upstream) | Always output upstream `text` (recorded when non-empty) |
 | `历史` (history) | Always output `history[history_index]` — reuse the last result |
 
 ### Inputs / Outputs
 
 | Input | Description |
 |---|---|
-| `text` | Connect the upstream LLM output — the front-end **hides its textbox, leaving only the top input port** (to save node space; type manually in `override_text` instead). When the upstream group is **muted (Ctrl+M)**, this receives empty → `auto` falls back to history automatically |
-| `override_text` | Manual override text (widget only, not linkable). Highest priority in `auto` mode; output & recorded. Clear it to return to live passthrough |
+| `text` | Connect the upstream LLM output — the front-end **hides its textbox, leaving only the top input port** (to save node space; type manually in `override_text` instead). When the upstream group is **muted (Ctrl+M)**, this receives empty → `自动` falls back to history automatically |
+| `override_text` | Manual override text (widget only, not linkable). Highest priority in `自动` mode; output & recorded. Clear it to return to live passthrough |
 | `history_key` | `-1` = auto (each node instance gets its own isolated history via its instance id). Set the same number on multiple nodes to share one history |
 | `history_index` | Which history entry to output: `0` = latest, up to `49` |
 
@@ -119,8 +119,8 @@ Outputs: `text` (result), `history_list` (numbered history with full text, `⏎`
 
 ### Tips
 
-- To freeze the last good result: **mute (Ctrl+M) the upstream LLM group** — `auto` mode will keep outputting the previous text. **Bypass (Ctrl+B) does NOT trigger this**: bypass passes data through unprocessed, which is indistinguishable from live output, so use the explicit `历史` mode or fill `override_text` instead.
-- `回填` writes the selected entry into `override_text` and switches `mode` back to `auto`, so the filled text takes effect immediately.
+- To freeze the last good result: **mute (Ctrl+M) the upstream LLM group** — `自动` mode will keep outputting the previous text. **Bypass (Ctrl+B) does NOT trigger this**: bypass passes data through unprocessed, which is indistinguishable from live output, so use the explicit `历史` mode or fill `override_text` instead.
+- `回填` writes the selected entry into `override_text` and switches `mode` back to `自动`, so the filled text takes effect immediately.
 - UI: the `text` textbox is hidden (top port only) to save space; the `override_text` box stays visible and can be dragged taller/shorter by its bottom-right handle.
 
 ## Installation

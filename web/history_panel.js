@@ -235,7 +235,7 @@ async function copyText(txt, btn) {
   flash(btn, "已复制");
 }
 
-// 回填：写入 override_text，并确保 mode=auto（auto 下 override_text 优先级最高，输出即生效）
+// 回填：写入 override_text，并确保 mode=自动（自动下 override_text 优先级最高，输出即生效）
 function fillManual(node, txt, btn) {
   const mw = node.widgets?.find((w) => w.name === "override_text");
   const md = node.widgets?.find((w) => w.name === "mode");
@@ -245,10 +245,10 @@ function fillManual(node, txt, btn) {
       try { mw.callback(txt); } catch (_) {}
     }
   }
-  if (md && md.value !== "auto") {
-    md.value = "auto";
+  if (md && md.value !== "自动") {
+    md.value = "自动";
     if (typeof md.callback === "function") {
-      try { md.callback("auto"); } catch (_) {}
+      try { md.callback("自动"); } catch (_) {}
     }
   }
   try { node.setDirtyCanvas(true, true); } catch (_) {}

@@ -1,24 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-文本缓存 / 直通 / 历史（带历史回溯）节点 —— comfy_0DAYE  v2
+文本缓存 / 上游 / 历史（带历史回溯）节点 —— comfy_0DAYE  v3
 
 用途：
   接住上游 LLM（提示词优化/翻译等）输出的文本，解决「跑一次得到好结果后，
   不想每次跑图都重新调 LLM」的问题。
 
 三种模式（mode）：
-  - auto（默认）：自动判定，按优先级
+  - 自动（默认）：自动判定，按优先级
       ① override_text 非空 → 输出它并记入历史（手动粘贴/回填写入后运行 = 自动固定）
       ② 上游 text 非空     → 直通并记入历史（默认直通显示）
       ③ 否则（上游被静音/未接）→ 输出历史[history_index]（自动固定上一轮）
-  - 直通：无条件输出上游 text（非空时记入历史）
+  - 上游：无条件输出上游 text（非空时记入历史）
   - 历史：无条件输出历史[history_index]（上一轮结果复用，即原「固定」）
 
-（v3 已移除「手动」模式：auto ① 在 override_text 非空时行为与之相同，
+（v3 已移除「手动」模式：自动① 在 override_text 非空时行为与之相同，
     唯一差异（override 为空时手动输出空串而非回退）无实际用途。）
 
 text 为可连线输入端口（前端隐藏文本框只留端口、置顶），接上游直通；手动输入/覆盖请用
-override_text 文本框（socketless）：「回填」按钮写入它并切 mode=auto，清空它即可恢复直通。
+override_text 文本框（socketless）：「回填」按钮写入它并切 mode=自动，清空它即可恢复直通。
 
 历史：
   - 按 history_key 分抽屉隔离。key = -1 表示「自动」：前端会在节点创建时把当前
@@ -52,7 +52,7 @@ def _record(texts, text):
 
 def _pick(texts, history_index):
     if not texts:
-        print("[TextCache] 警告：历史为空，输出空串（请先切到 auto/直通 并跑一次）")
+        print("[TextCache] 警告：历史为空，输出空串（请先切到 自动/上游 并跑一次）")
         return ""
     idx = max(0, min(int(history_index), len(texts) - 1))
     return texts[idx]
@@ -69,7 +69,7 @@ def _preview(texts):
 
 
 class TextCacheWithHistory(io.ComfyNode):
-    """文本缓存与历史回溯 v3：auto 自动判定（覆盖→直通→历史），按 key 隔离，50 条历史。"""
+    """文本缓存与历史回溯 v3：自动判定（覆盖→直通→历史），按 key 隔离，50 条历史。"""
 
     @classmethod
     def define_schema(cls):
@@ -86,20 +86,20 @@ class TextCacheWithHistory(io.ComfyNode):
                     # text 必须在 required 组第一位，保证它的连线端口在节点最上方（置顶）。
                     # 前端会隐藏 text 的文本框（w.hidden，只保留端口，省出节点区域）；
                     # 不连线时用 widget 默认值 ""，上游连线时用连线值。手动输入请用 override_text 文本框。
-                    tooltip="接上游 LLM 的文本输出（STRING 线，前端已隐藏文本框仅留端口，置顶）。上游组被静音（Ctrl+M）时收不到数据 → auto 自动切到历史",
+                    tooltip="接上游 LLM 的文本输出（STRING 线，前端已隐藏文本框仅留端口，置顶）。上游组被静音（Ctrl+M）时收不到数据 → 自动切到历史",
                 ),
                 io.String.Input(
                     "override_text",
                     multiline=True,
                     default="",
                     socketless=True,
-                    tooltip="手动覆盖文本：auto 模式下非空时优先级最高，压过上游 text 输出并记入历史；想恢复直通就清空它",
+                    tooltip="手动覆盖文本：自动模式下非空时优先级最高，压过上游 text 输出并记入历史；想恢复直通就清空它",
                 ),
                 io.Combo.Input(
                     "mode",
-                    options=["auto", "直通", "历史"],
-                    default="auto",
-                    tooltip="auto：override_text 非空→输出它；否则上游 text 非空→直通；否则（上游被静音/未接）→输出历史[history_index]。直通：无条件输出上游。历史：无条件输出历史",
+                    options=["自动", "上游", "历史"],
+                    default="自动",
+                    tooltip="自动：override_text 非空→输出它；否则上游 text 非空→直通；否则（上游被静音/未接）→输出历史[history_index]。上游：无条件输出上游。历史：无条件输出历史",
                 ),
                 io.Int.Input(
                     "history_key",
@@ -120,7 +120,7 @@ class TextCacheWithHistory(io.ComfyNode):
                 io.String.Output(
                     "text",
                     display_name="text",
-                    tooltip="输出文本：auto/直通=最新文本或覆盖文本；历史=选中的一条",
+                    tooltip="输出文本：自动/上游=最新文本或覆盖文本；历史=选中的一条",
                 ),
                 io.String.Output(
                     "history_list",
@@ -129,7 +129,7 @@ class TextCacheWithHistory(io.ComfyNode):
                 ),
             ],
             description=(
-                "文本缓存/直通/历史：auto 自动判定（覆盖文本→上游直通→历史兜底）；"
+                "文本缓存/上游/历史：自动判定（覆盖文本→上游直通→历史兜底）；"
                 "按 history_key 隔离，每抽屉最近 50 条去重；内存态，重启即清空。"
             ),
         )
@@ -143,12 +143,12 @@ class TextCacheWithHistory(io.ComfyNode):
 
         texts = _history_bucket(history_key)
 
-        if mode == "直通":
+        if mode == "上游":
             _record(texts, text)
             out_text = text
         elif mode == "历史":
             out_text = _pick(texts, history_index)
-        else:  # "auto" 及未知值兜底
+        else:  # "自动" 及未知值兜底（旧值 auto/直通/手动 等一律走自动判定，安全）
             if override_text:
                 _record(texts, override_text)
                 out_text = override_text
