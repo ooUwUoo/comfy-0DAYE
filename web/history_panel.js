@@ -1,12 +1,14 @@
 // 文本缓存节点历史面板 —— comfy_0DAYE
 // 节点体内「历史记录」区域：最近 50 条，每条 = 序号 + 截断文本 + 复制/回填双按钮；
 // 悬停弹出完整文本；执行完成后自动刷新；history_key=-1 时写入当前节点实例 id 实现自动隔离。
-// 面板为弹性布局：默认 110px，拖动节点右下角即可自然调高/调矮（DOM widget 吸收节点多余高度）。
+// 面板为弹性布局：默认 160px，拖动节点右下角即可自然调高/调矮（DOM widget 吸收节点多余高度）。
+// 两个输入框（text / override_text）支持拖拽右下角自由调节高度：拖拽时实时同步 widget 高度并重排节点。
 import { app } from "../../../scripts/app.js";
 
 const NODE_NAME = "TextCacheWithHistory";
-const PANEL_H = 110; // 默认面板高度（px），弹性保底值
+const PANEL_H = 160; // 默认面板高度（px），弹性保底值
 const ROW_BRIEF_MAX = 120; // 行内展示的截断长度（字符）
+const RESIZABLE_INPUTS = ["text", "override_text"]; // 可拖拽调高的输入框 widget 名（必须与后端输入 id 一致）
 
 const STYLE_ID = "0daye-histpanel-style";
 function ensureStyle() {
@@ -38,6 +40,60 @@ function ensureStyle() {
 function autoAssignKey(node) {
   const kw = node.widgets?.find((w) => w.name === "history_key");
   if (kw && (kw.value === -1 || kw.value === "-1")) kw.value = node.id;
+}
+
+// —— 让多行输入框（text / override_text）支持拖拽调节高度 ——
+// ComfyUI 的 multiline widget 本身不绑定「拖拽同步节点高度」：textarea 有 DOM 层，
+// 但 widget 逻辑高度固定，拖了不会驱动节点重排。这里给 textarea 加 CSS resize 手柄，
+// 拖拽时（DOM resize 事件 + pointerup 兜底）把新高度实时写回 widget 的 computeSize，
+// 再重算节点总高并重绘，使输入框区（节点上边框）高度可自由伸缩。
+function makeResizableTextarea(node, wName) {
+  const w = node.widgets?.find((x) => x.name === wName);
+  if (!w || w.__odRz) return;
+  const TA_MIN = 38; // 拖拽最小高度（px）
+
+  const bind = () => {
+    const ta = w.element;
+    if (!ta || ta.tagName !== "TEXTAREA") return false; // DOM 未就绪，等下一次绘制
+    ta.style.resize = "vertical";
+    ta.style.overflowY = "auto";
+    ta.style.minHeight = `${TA_MIN}px`;
+    let base = Math.max(TA_MIN, ta.offsetHeight || 60);
+
+    const sync = () => {
+      const h = Math.max(TA_MIN, ta.offsetHeight);
+      const delta = h - base;
+      if (Math.abs(delta) < 2) return;
+      base = h;
+      const width = node.size?.[0] ?? 300;
+      w.computeSize = (cw) => [cw ?? width, h + 12]; // 12 = 标题/描边余量
+      if (typeof w.computeLayoutSize === "function") {
+        w.computeLayoutSize = () => ({ minHeight: h + 12, minWidth: 1 });
+      }
+      // 重算节点高度：优先走 node.computeSize 汇总 widget 高度，失败则按增量调整
+      let nh = 0;
+      try {
+        const cs = node.computeSize?.(node.size[0]);
+        if (cs && Array.isArray(cs) && cs[1] > 0) nh = cs[1];
+      } catch (_) {}
+      if (!nh) nh = node.size[1] + delta;
+      node.setSize?.(node.size[0], nh);
+      node.setDirtyCanvas?.(true, true);
+    };
+    ta.addEventListener("resize", sync); // CSS resize 手柄拖拽时实时触发
+    ta.addEventListener("pointerup", sync, true); // 兜底：拖拽结束再同步一次
+    w.__odRz = true;
+    return true;
+  };
+
+  if (!bind()) {
+    // widget DOM 尚未创建（首次绘制前拿不到 element）：挂到 onDrawForeground 上重试
+    const draw = node.onDrawForeground?.bind(node);
+    node.onDrawForeground = function (...args) {
+      draw?.apply(this, args);
+      bind();
+    };
+  }
 }
 
 // —— 面板构建 ——
@@ -243,6 +299,7 @@ app.registerExtension({
       const r = onNodeCreated?.apply(this, arguments);
       autoAssignKey(this);
       attachPanel(this);
+      for (const n of RESIZABLE_INPUTS) makeResizableTextarea(this, n);
       return r;
     };
 
@@ -251,6 +308,7 @@ app.registerExtension({
     nodeType.prototype.configure = function () {
       const rc = origConfigure?.apply(this, arguments);
       autoAssignKey(this);
+      for (const n of RESIZABLE_INPUTS) makeResizableTextarea(this, n);
       return rc;
     };
   },
