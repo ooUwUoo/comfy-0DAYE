@@ -11,6 +11,8 @@ import node_helpers
 import nodes
 from comfy_api.latest import ComfyExtension, io
 
+from .text_cache import TextCacheWithHistory
+
 
 # 支持 reference_latents（in-context 参考图）编辑机制的模型类名 → 该模型所需的 reference_latents_method。
 # None 表示模型自带默认值、无需指定：QwenImage21 由 model_detection 按权重判定
@@ -347,7 +349,7 @@ class SplitInpaint(io.ComfyNode):
                 kernel = np.ones((mask_expand * 2 + 1, mask_expand * 2 + 1), np.uint8)
                 region_mask = cv2.dilate(region_mask, kernel, iterations=1)
 
-            # 2.3 计算目标尺寸（保持长宽比，对齐到32）
+            # 2.3 计算画布尺寸（长边=guide_size，32对齐）
             if crop_w >= crop_h:
                 target_w = guide_size
                 target_h = int(round(guide_size * crop_h / crop_w / 32)) * 32
@@ -357,9 +359,29 @@ class SplitInpaint(io.ComfyNode):
             target_w = max(32, target_w)
             target_h = max(32, target_h)
 
-            # 2.4 缩放裁剪图
+            # 画布 32 对齐取整后，宽高比与裁剪框可能相差最多 ~2%。若直接 squash
+            # 缩放，贴回时两个方向缩放比不同（各向异性拉伸），离锚点越远漂移越大，
+            # 症状与 DiT 偏移一致（边缘大、中心小）。先把裁剪图用边缘复制填充到与
+            # 画布"严格同宽高比"的最小整数尺寸（GCD 求解，保证两方向缩放比完全相等），
+            # 解码后再裁掉填充边——几何全程只有等比缩放+平移，位置零漂移。
+            g = math.gcd(target_w, target_h)
+            ratio_w, ratio_h = target_w // g, target_h // g
+            k = max(math.ceil(crop_w / ratio_w), math.ceil(crop_h / ratio_h))
+            pad_w = k * ratio_w - crop_w
+            pad_h = k * ratio_h - crop_h
+            pad_l, pad_r = pad_w // 2, pad_w - pad_w // 2
+            pad_t, pad_b = pad_h // 2, pad_h - pad_h // 2
+            padded_w, padded_h = crop_w + pad_w, crop_h + pad_h
+
+            # 2.4 填充（replicate，不引入镜像/黑边伪影）后等比缩放到画布。
+            # 蒙版不填充：填充区只用于几何对齐，不参与贴回混合。
+            padded_chw = crop_img.movedim(-1, 1)
+            if pad_w or pad_h:
+                padded_chw = torch.nn.functional.pad(
+                    padded_chw, (pad_l, pad_r, pad_t, pad_b), mode="replicate"
+                )
             resized_img = comfy.utils.common_upscale(
-                crop_img.movedim(-1, 1), target_w, target_h, "lanczos", "disabled"
+                padded_chw, target_w, target_h, "lanczos", "disabled"
             ).movedim(1, -1)
 
             # 2.5 参考潜变量与采样画布同网格：直接用画布尺寸的裁剪图编码。
@@ -438,15 +460,19 @@ class SplitInpaint(io.ComfyNode):
                 positive, negative, {"samples": latent}, denoise=denoise
             )[0]
 
-            # 2.7 解码并缩放回裁剪尺寸
+            # 2.7 解码：先等比缩回填充尺寸，再裁掉填充边恢复原始裁剪框尺寸。
+            # 全程两方向缩放比相同，贴回内容与原图网格几何对齐，无各向异性漂移。
             decoded = vae.decode(latent_out["samples"])
             if decoded.ndim == 5:  # 视频类 VAE（如 Wan21 系）：只取第一帧
                 decoded = decoded[:, 0]
             if not has_alpha and decoded.shape[-1] == 4:
                 decoded = decoded[..., :3]
-            decoded_resized = comfy.utils.common_upscale(
-                decoded.movedim(-1, 1), crop_w, crop_h, "lanczos", "disabled"
+            decoded_padded = comfy.utils.common_upscale(
+                decoded.movedim(-1, 1), padded_w, padded_h, "lanczos", "disabled"
             ).movedim(1, -1)
+            decoded_resized = decoded_padded[
+                :, pad_t:pad_t + crop_h, pad_l:pad_l + crop_w, :
+            ]
 
             # 2.8 蒙版羽化
             if mask_blur > 0:
@@ -480,7 +506,7 @@ WEB_DIRECTORY = "./web"
 
 class SplitInpaintExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [SplitInpaint]
+        return [SplitInpaint, TextCacheWithHistory]
 
 
 async def comfy_entrypoint() -> SplitInpaintExtension:
@@ -490,7 +516,9 @@ async def comfy_entrypoint() -> SplitInpaintExtension:
 # Fallback: old-style node registration for backward compatibility
 NODE_CLASS_MAPPINGS = {
     "SplitInpaint": SplitInpaint,
+    "TextCacheWithHistory": TextCacheWithHistory,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SplitInpaint": "Split Inpaint",
+    "TextCacheWithHistory": "文本缓存(历史50)",
 }

@@ -86,6 +86,43 @@ Dynamic inputs `image_2` ~ `image_10` (official Autogrow style — connect one, 
 | color_match | Mean | Per-region color matching algorithm |
 | color_strength | 1.0 | Color match intensity |
 
+## Text Cache / History (`文本缓存(历史50)`)
+
+Node that buffers the text output of upstream LLM nodes (prompt expansion / translation, etc.), so you don't have to re-run the LLM every time you want to reuse a good result.
+
+**Category:** `0DAYE`
+
+### Modes (`mode`)
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | Priority: ① `override_text` non-empty → output & record it; ② upstream `text` non-empty → pass through & record; ③ otherwise (upstream muted / unconnected) → output `history[history_index]` |
+| `直通` (passthrough) | Always output upstream `text` (recorded when non-empty) |
+| `历史` (history) | Always output `history[history_index]` — reuse the last result |
+| `手动` (manual) | Always output `override_text` (recorded when non-empty) |
+
+### Inputs / Outputs
+
+| Input | Description |
+|---|---|
+| `text` | Connect the upstream LLM output. When the upstream group is **muted (Ctrl+M)**, this receives empty → `auto` falls back to history automatically |
+| `override_text` | Manual override text (widget only, not linkable). Highest priority in `auto` mode; output & recorded. Clear it to return to live passthrough |
+| `history_key` | `-1` = auto (each node instance gets its own isolated history via its instance id). Set the same number on multiple nodes to share one history |
+| `history_index` | Which history entry to output: `0` = latest, up to `49` |
+
+Outputs: `text` (result), `history_list` (numbered history with full text, `⏎` = newline placeholder).
+
+### History
+
+- Keeps the latest **50** entries per key, de-duplicated (same text as the newest entry is not re-added)
+- In-memory only — **cleared on ComfyUI restart**
+- The node's built-in panel lists the entries with hover-to-read-full-text, plus `复制` (copy to clipboard) and `回填` (fill back into `override_text`) per row; refreshes automatically after each run
+
+### Tips
+
+- To freeze the last good result: **mute (Ctrl+M) the upstream LLM group** — `auto` mode will keep outputting the previous text. **Bypass (Ctrl+B) does NOT trigger this**: bypass passes data through unprocessed, which is indistinguishable from live output, so use the explicit `历史` / `手动` mode instead.
+- `回填` writes the selected entry into `override_text` and switches `mode` back to `auto`, so the filled text takes effect immediately.
+
 ## Installation
 
 ### Via ComfyUI Manager
