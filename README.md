@@ -99,7 +99,6 @@ Node that buffers the text output of upstream LLM nodes (prompt expansion / tran
 | `auto` (default) | Priority: ① `override_text` non-empty → output & record it; ② upstream `text` non-empty → pass through & record; ③ otherwise (upstream muted / unconnected) → output `history[history_index]` |
 | `直通` (passthrough) | Always output upstream `text` (recorded when non-empty) |
 | `历史` (history) | Always output `history[history_index]` — reuse the last result |
-| `手动` (manual) | Always output `override_text` (recorded when non-empty) |
 
 ### Inputs / Outputs
 
@@ -120,7 +119,7 @@ Outputs: `text` (result), `history_list` (numbered history with full text, `⏎`
 
 ### Tips
 
-- To freeze the last good result: **mute (Ctrl+M) the upstream LLM group** — `auto` mode will keep outputting the previous text. **Bypass (Ctrl+B) does NOT trigger this**: bypass passes data through unprocessed, which is indistinguishable from live output, so use the explicit `历史` / `手动` mode instead.
+- To freeze the last good result: **mute (Ctrl+M) the upstream LLM group** — `auto` mode will keep outputting the previous text. **Bypass (Ctrl+B) does NOT trigger this**: bypass passes data through unprocessed, which is indistinguishable from live output, so use the explicit `历史` mode or fill `override_text` instead.
 - `回填` writes the selected entry into `override_text` and switches `mode` back to `auto`, so the filled text takes effect immediately.
 - UI: the `text` textbox is hidden (top port only) to save space; the `override_text` box stays visible and can be dragged taller/shorter by its bottom-right handle.
 
