@@ -70,20 +70,16 @@ class TextCacheWithHistory(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="TextCacheWithHistory",
-            display_name="文本缓存(历史50)",
+            display_name="文本缓存",
             category="0DAYE",
             inputs=[
-                io.Combo.Input(
-                    "mode",
-                    options=["auto", "直通", "历史", "手动"],
-                    default="auto",
-                    tooltip="auto：manual_text 非空→输出它；否则上游 text 非空→直通；否则（上游被静音/未接）→输出历史[history_index]。直通：无条件输出上游。历史：无条件输出历史。手动：无条件输出 manual_text",
-                ),
                 io.String.Input(
                     "text",
                     multiline=True,
                     default="",
-                    optional=True,
+                    # 注意：不要设 optional=True。io 节点渲染顺序 = required 组在前、optional 组在后，
+                    # text 必须在 required 组里才能保证「两个输入框在节点上部，mode/history 在下方」。
+                    # 不连线时用 widget 默认值 ""（与 optional 行为等价），上游连线时用连线值。
                     tooltip="接上游 LLM 的文本输出（STRING 线）。上游组被静音（Ctrl+M）时收不到数据 → auto 自动切到历史",
                 ),
                 io.String.Input(
@@ -92,6 +88,12 @@ class TextCacheWithHistory(io.ComfyNode):
                     default="",
                     socketless=True,
                     tooltip="手动覆盖文本：auto 模式下非空时优先级最高，压过上游 text 输出并记入历史；想恢复直通就清空它",
+                ),
+                io.Combo.Input(
+                    "mode",
+                    options=["auto", "直通", "历史", "手动"],
+                    default="auto",
+                    tooltip="auto：override_text 非空→输出它；否则上游 text 非空→直通；否则（上游被静音/未接）→输出历史[history_index]。直通：无条件输出上游。历史：无条件输出历史。手动：无条件输出 override_text",
                 ),
                 io.Int.Input(
                     "history_key",
@@ -153,4 +155,11 @@ class TextCacheWithHistory(io.ComfyNode):
             else:
                 out_text = _pick(texts, history_index)
 
-        return io.NodeOutput(out_text, _preview(texts))
+        # 关键：必须带 ui 返回，否则后端 len(output_ui)>0 不成立 → 不广播 executed
+        # 事件 → 前端历史面板永远收不到刷新数据。ui 的值必须是列表（后端会按可迭代展开）。
+        hist_list = _preview(texts)
+        return io.NodeOutput(
+            out_text,
+            hist_list,
+            ui={"text": [out_text], "history_list": [hist_list]},
+        )

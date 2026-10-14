@@ -1,10 +1,11 @@
 // 文本缓存节点历史面板 —— comfy_0DAYE
-// 在节点体内注入「历史记录」区域：最近 50 条，每条 = 序号 + 截断文本 + 复制/回填双按钮；
+// 节点体内「历史记录」区域：最近 50 条，每条 = 序号 + 截断文本 + 复制/回填双按钮；
 // 悬停弹出完整文本；执行完成后自动刷新；history_key=-1 时写入当前节点实例 id 实现自动隔离。
+// 面板为弹性布局：默认 110px，拖动节点右下角即可自然调高/调矮（DOM widget 吸收节点多余高度）。
 import { app } from "../../../scripts/app.js";
 
 const NODE_NAME = "TextCacheWithHistory";
-const PANEL_H = 240; // 面板固定高度，超出滚动
+const PANEL_H = 110; // 默认面板高度（px），弹性保底值
 const ROW_BRIEF_MAX = 120; // 行内展示的截断长度（字符）
 
 const STYLE_ID = "0daye-histpanel-style";
@@ -13,10 +14,11 @@ function ensureStyle() {
   const el = document.createElement("style");
   el.id = STYLE_ID;
   el.textContent = `
-    .od-hp{width:100%;height:${PANEL_H}px;box-sizing:border-box;overflow-y:auto;
+    .od-hp{width:100%;height:100%;box-sizing:border-box;display:flex;flex-direction:column;
       background:#16161b;color:#cfcfd6;font-family:Consolas,'Microsoft YaHei',monospace;
       font-size:12px;line-height:1.5;padding:4px 6px;border-top:1px solid #33333c;}
-    .od-hp-header{color:#8a8f98;font-size:11px;margin-bottom:3px;}
+    .od-hp-header{color:#8a8f98;font-size:11px;margin-bottom:3px;flex:none;}
+    .od-hp-list{flex:1 1 auto;min-height:0;overflow-y:auto;}
     .od-hp-empty{color:#6b7280;font-size:11px;padding:6px 2px;}
     .od-hp-row{display:flex;align-items:center;gap:5px;padding:1px 2px;border-radius:3px;}
     .od-hp-row:hover{background:#2a2a31;}
@@ -45,8 +47,9 @@ function makePanel() {
   root.className = "od-hp";
   const header = document.createElement("div");
   header.className = "od-hp-header";
-  header.textContent = "历史记录（50 条 · 悬停看全文 · 复制/回填）";
+  header.textContent = "历史记录（50 条 · 悬停看全文）";
   const list = document.createElement("div");
+  list.className = "od-hp-list";
   root.appendChild(header);
   root.appendChild(list);
   const tip = document.createElement("div");
@@ -64,8 +67,11 @@ function attachPanel(node) {
     hideOnZoom: false,
     getMinHeight: () => PANEL_H,
   });
+  // 弹性保底：节点被拖高时，多余高度由本 widget 吸收（面板自然变高）
   widget.computeLayoutSize = () => ({ minHeight: PANEL_H, minWidth: 1 });
+  p.widget = widget;
   node._odHp = { ...p, widget };
+
   updatePanel(node, []);
 }
 
@@ -221,8 +227,10 @@ app.api?.addEventListener?.("executed", (e) => {
     node = app.graph.getNodeById ? app.graph.getNodeById(nodeId) : app.graph._nodes_by_id?.[nodeId];
   } catch (_) {}
   if (!node || node.type !== NODE_NAME) return;
-  const listStr = d.output?.history_list;
-  if (typeof listStr === "string") updatePanel(node, parseList(listStr));
+  // 后端 executed 的 output 值为「数组」（如 {"history_list": ["..."]}），取首元素
+  const raw = d.output?.history_list;
+  const s = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof s === "string") updatePanel(node, parseList(s));
 });
 
 app.registerExtension({

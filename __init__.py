@@ -145,7 +145,7 @@ class SplitInpaint(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="SplitInpaint",
-            display_name="Split Inpaint",
+            display_name="蒙版分块重绘",
             category="0DAYE",
             inputs=[
                 io.Model.Input("model"),
@@ -519,6 +519,6 @@ NODE_CLASS_MAPPINGS = {
     "TextCacheWithHistory": TextCacheWithHistory,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "SplitInpaint": "Split Inpaint",
-    "TextCacheWithHistory": "文本缓存(历史50)",
+    "SplitInpaint": "蒙版分块重绘",
+    "TextCacheWithHistory": "文本缓存",
 }

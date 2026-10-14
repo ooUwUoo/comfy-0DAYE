@@ -4,7 +4,7 @@ ComfyUI custom node for multi-region inpainting with automatic connected-compone
 
 ## Node
 
-### Split Inpaint
+### 蒙版分块重绘 (Split Inpaint)
 
 Splits the mask into connected regions using OpenCV `connectedComponentsWithStats`. Each region is independently cropped, upscaled, encoded, sampled, color-matched, and blended back.
 
@@ -86,7 +86,7 @@ Dynamic inputs `image_2` ~ `image_10` (official Autogrow style — connect one, 
 | color_match | Mean | Per-region color matching algorithm |
 | color_strength | 1.0 | Color match intensity |
 
-## Text Cache / History (`文本缓存(历史50)`)
+## Text Cache / History (`文本缓存`)
 
 Node that buffers the text output of upstream LLM nodes (prompt expansion / translation, etc.), so you don't have to re-run the LLM every time you want to reuse a good result.
 
