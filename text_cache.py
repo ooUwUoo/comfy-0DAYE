@@ -8,12 +8,15 @@
 
 四种模式（mode）：
   - auto（默认）：自动判定，按优先级
-      ① override_text 非空 → 输出它并记入历史（手动粘贴后运行 = 自动固定）
+      ① override_text 非空 → 输出它并记入历史（连线/回填写入后运行 = 自动固定）
       ② 上游 text 非空     → 直通并记入历史（默认直通显示）
       ③ 否则（上游被静音/未接）→ 输出历史[history_index]（自动固定上一轮）
   - 直通：无条件输出上游 text（非空时记入历史）
   - 历史：无条件输出历史[history_index]（上一轮结果复用，即原「固定」）
   - 手动：无条件输出 override_text（非空时记入历史）
+
+text 为可连线输入端口（前端隐藏文本框只留端口、置顶），接上游直通；手动输入/覆盖请用
+override_text 文本框（socketless）：「回填」按钮写入它并切 mode=auto，清空它即可恢复直通。
 
 历史：
   - 按 history_key 分抽屉隔离。key = -1 表示「自动」：前端会在节点创建时把当前
@@ -78,9 +81,10 @@ class TextCacheWithHistory(io.ComfyNode):
                     multiline=True,
                     default="",
                     # 注意：不要设 optional=True。io 节点渲染顺序 = required 组在前、optional 组在后，
-                    # text 必须在 required 组里才能保证「两个输入框在节点上部，mode/history 在下方」。
-                    # 不连线时用 widget 默认值 ""（与 optional 行为等价），上游连线时用连线值。
-                    tooltip="接上游 LLM 的文本输出（STRING 线）。上游组被静音（Ctrl+M）时收不到数据 → auto 自动切到历史",
+                    # text 必须在 required 组第一位，保证它的连线端口在节点最上方（置顶）。
+                    # 前端会隐藏 text 的文本框（w.hidden，只保留端口，省出节点区域）；
+                    # 不连线时用 widget 默认值 ""，上游连线时用连线值。手动输入请用 override_text 文本框。
+                    tooltip="接上游 LLM 的文本输出（STRING 线，前端已隐藏文本框仅留端口，置顶）。上游组被静音（Ctrl+M）时收不到数据 → auto 自动切到历史",
                 ),
                 io.String.Input(
                     "override_text",

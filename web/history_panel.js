@@ -2,13 +2,13 @@
 // 节点体内「历史记录」区域：最近 50 条，每条 = 序号 + 截断文本 + 复制/回填双按钮；
 // 悬停弹出完整文本；执行完成后自动刷新；history_key=-1 时写入当前节点实例 id 实现自动隔离。
 // 面板为弹性布局：默认 160px，拖动节点右下角即可自然调高/调矮（DOM widget 吸收节点多余高度）。
-// 两个输入框（text / override_text）支持拖拽右下角自由调节高度：拖拽时实时同步 widget 高度并重排节点。
+// text 为置顶可连线端口（文本框已隐藏，省出节点区域）；override_text 文本框保留（可拖拽调高）。
 import { app } from "../../../scripts/app.js";
 
 const NODE_NAME = "TextCacheWithHistory";
 const PANEL_H = 160; // 默认面板高度（px），弹性保底值
 const ROW_BRIEF_MAX = 120; // 行内展示的截断长度（字符）
-const RESIZABLE_INPUTS = ["text", "override_text"]; // 可拖拽调高的输入框 widget 名（必须与后端输入 id 一致）
+const RESIZABLE_INPUTS = ["override_text"]; // 可拖拽调高的输入框 widget 名（必须与后端输入 id 一致）
 
 const STYLE_ID = "0daye-histpanel-style";
 function ensureStyle() {
@@ -40,6 +40,22 @@ function ensureStyle() {
 function autoAssignKey(node) {
   const kw = node.widgets?.find((w) => w.name === "history_key");
   if (kw && (kw.value === -1 || kw.value === "-1")) kw.value = node.id;
+}
+
+// —— 隐藏 text 文本框，只保留置顶可连线端口（节省节点区域）——
+// text 后端为可连线输入（required 组第一位 → 端口在节点最上方）。ComfyUI 原生支持 widget 隐藏
+// （w.hidden=true 后节点布局跳过它，输入端口仍独立渲染），故此处直接隐藏文本框。
+function hideTextWidget(node) {
+  if (node.__odHidText) return;
+  const w = node.widgets?.find((x) => x.name === "text");
+  if (!w) return;
+  w.hidden = true;
+  node.__odHidText = true;
+  try {
+    const cs = node.computeSize?.(node.size[0]);
+    if (cs && Array.isArray(cs) && cs[1] > 0) node.setSize?.(node.size[0], cs[1]);
+  } catch (_) {}
+  node.setDirtyCanvas?.(true, true);
 }
 
 // —— 让多行输入框（text / override_text）支持拖拽调节高度 ——
@@ -299,6 +315,7 @@ app.registerExtension({
       const r = onNodeCreated?.apply(this, arguments);
       autoAssignKey(this);
       attachPanel(this);
+      hideTextWidget(this);
       for (const n of RESIZABLE_INPUTS) makeResizableTextarea(this, n);
       return r;
     };
@@ -308,6 +325,7 @@ app.registerExtension({
     nodeType.prototype.configure = function () {
       const rc = origConfigure?.apply(this, arguments);
       autoAssignKey(this);
+      hideTextWidget(this);
       for (const n of RESIZABLE_INPUTS) makeResizableTextarea(this, n);
       return rc;
     };
