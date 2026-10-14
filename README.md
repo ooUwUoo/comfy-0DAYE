@@ -13,10 +13,7 @@ Two nodes:
 
 ### Documentation
 
-| Node | English | 中文 |
-|---|---|---|
-| Split Inpaint | [docs/split_inpaint.en.md](docs/split_inpaint.en.md) | [docs/split_inpaint.zh-CN.md](docs/split_inpaint.zh-CN.md) |
-| Text Cache | [docs/text_cache.en.md](docs/text_cache.en.md) | [docs/text_cache.zh-CN.md](docs/text_cache.zh-CN.md) |
+All detailed node docs: [docs/README.md](docs/README.md)（jump page with English / 中文 links）
 
 ### Installation
 
