@@ -112,6 +112,26 @@ function makeResizableTextarea(node, wName) {
   }
 }
 
+// —— 节点内绘制一行注释：说明置顶 text 端口的用途（端口名保持 text，注释可见不占布局）——
+function attachTextHint(node) {
+  if (node.__odHint) return;
+  node.__odHint = true;
+  const draw = node.onDrawForeground?.bind(node);
+  node.onDrawForeground = function (ctx, ...rest) {
+    draw?.apply(this, [ctx, ...rest]);
+    try {
+      ctx.save();
+      ctx.font = "11px 'Microsoft YaHei', 'PingFang SC', sans-serif";
+      ctx.fillStyle = "rgba(138,143,152,0.9)";
+      // text 端口在节点最上方一行（文本框已隐藏，该行右侧空出），注释画在标题栏下该行内
+      const x = this.pos[0] + 54; // 避开左侧端口 + "text" 标签
+      const y = this.pos[1] + (this.title_height ?? this.titleHeight ?? 30) + 15;
+      ctx.fillText("text 端口 ← 上游 LLM（静音自动回退历史）", x, y);
+      ctx.restore();
+    } catch (_) {}
+  };
+}
+
 // —— 面板构建 ——
 function makePanel() {
   ensureStyle();
@@ -316,6 +336,7 @@ app.registerExtension({
       autoAssignKey(this);
       attachPanel(this);
       hideTextWidget(this);
+      attachTextHint(this);
       for (const n of RESIZABLE_INPUTS) makeResizableTextarea(this, n);
       return r;
     };
@@ -326,6 +347,7 @@ app.registerExtension({
       const rc = origConfigure?.apply(this, arguments);
       autoAssignKey(this);
       hideTextWidget(this);
+      attachTextHint(this);
       for (const n of RESIZABLE_INPUTS) makeResizableTextarea(this, n);
       return rc;
     };

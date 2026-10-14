@@ -121,7 +121,7 @@ Outputs: `text` (result), `history_list` (numbered history with full text, `⏎`
 
 - To freeze the last good result: **mute (Ctrl+M) the upstream LLM group** — `自动` mode will keep outputting the previous text. **Bypass (Ctrl+B) does NOT trigger this**: bypass passes data through unprocessed, which is indistinguishable from live output, so use the explicit `历史` mode or fill `override_text` instead.
 - `回填` writes the selected entry into `override_text` and switches `mode` back to `自动`, so the filled text takes effect immediately.
-- UI: the `text` textbox is hidden (top port only) to save space; the `override_text` box stays visible and can be dragged taller/shorter by its bottom-right handle.
+- UI: the `text` textbox is hidden (top port only) to save space, with a hint line "text 端口 ← 上游 LLM" drawn under the title; the `override_text` box stays visible and can be dragged taller/shorter by its bottom-right handle.
 
 ## Installation
 
