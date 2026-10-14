@@ -17,8 +17,9 @@
 （v3 已移除「手动」模式：自动① 在 override_text 非空时行为与之相同，
     唯一差异（override 为空时手动输出空串而非回退）无实际用途。）
 
-text 为可连线输入端口（前端隐藏文本框只留端口、置顶），接上游直通；手动输入/覆盖请用
-override_text 文本框（socketless）：「回填」按钮写入它并切 mode=自动，清空它即可恢复直通。
+text 为纯连线输入端口（force_input：绿色圆点、无文本框，optional → 位于其它控件下方），
+接上游直通；手动输入/覆盖请用 override_text 文本框（socketless）：「回填」按钮写入它并切
+mode=自动，清空它即可恢复直通。
 
 历史：
   - 按 history_key 分抽屉隔离。key = -1 表示「自动」：前端会在节点创建时把当前
@@ -80,20 +81,19 @@ class TextCacheWithHistory(io.ComfyNode):
             inputs=[
                 io.String.Input(
                     "text",
-                    multiline=True,
-                    default="",
-                    # 注意：不要设 optional=True。io 节点渲染顺序 = required 组在前、optional 组在后，
-                    # text 必须在 required 组第一位，保证它的连线端口在节点最上方（置顶）。
-                    # 前端会隐藏 text 的文本框（w.hidden，只保留端口，省出节点区域）；
-                    # 不连线时用 widget 默认值 ""，上游连线时用连线值。手动输入请用 override_text 文本框。
-                    tooltip="接上游 LLM 的文本输出（STRING 线，前端已隐藏文本框仅留端口，置顶）。上游组被静音（Ctrl+M）时收不到数据 → 自动切到历史",
+                    optional=True,      # 必留：required 输入未连线会被校验拒绝（required_input_missing），optional 才能「不接线/只跑历史」
+                    force_input=True,   # 只保留连线端口（绿色圆点），不生成文本框；该端口专接上游 LLM
+                    # 端口位置说明：前端渲染顺序 = required 组在前、optional 组在后，
+                    # 故 text 端口在其它控件下方（左下角），无法再置顶（置顶需脆弱 JS 重排，不做）。
+                    # 上游被静音（Ctrl+M）时执行器传 None → execute 里兜底为 ""。手动输入请用 override_text 文本框。
+                    tooltip="接上游 LLM 的文本输出（STRING 线，仅端口无文本框）。上游组被静音（Ctrl+M）时收不到数据 → 自动切到历史",
                 ),
                 io.String.Input(
                     "override_text",
                     multiline=True,
                     default="",
                     socketless=True,
-                    tooltip="手动覆盖文本：自动模式下非空时优先级最高，压过上游 text 输出并记入历史；想恢复直通就清空它",
+                    tooltip="手动覆盖：非空时优先输出并记入历史；清空恢复上游",
                 ),
                 io.Combo.Input(
                     "mode",
@@ -135,7 +135,9 @@ class TextCacheWithHistory(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, mode, text, override_text, history_key, history_index):
+    def execute(cls, mode, text=None, override_text="", history_key=-1, history_index=0):
+        # text 是 optional 输入：未连线时执行器根本不传该 kwarg（必须有默认值），
+        # 上游被静音时传 None；两种「空」统一兜底为 ""。
         if text is None:
             text = ""
         if override_text is None:

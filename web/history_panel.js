@@ -1,14 +1,18 @@
 // 文本缓存节点历史面板 —— comfy_0DAYE
 // 节点体内「历史记录」区域：最近 50 条，每条 = 序号 + 截断文本 + 复制/回填双按钮；
 // 悬停弹出完整文本；执行完成后自动刷新；history_key=-1 时写入当前节点实例 id 实现自动隔离。
-// 面板为弹性布局：默认 160px，拖动节点右下角即可自然调高/调矮（DOM widget 吸收节点多余高度）。
-// text 为置顶可连线端口（文本框已隐藏，省出节点区域）；override_text 文本框保留（可拖拽调高）。
+// 面板为弹性布局：默认 160px，两种调高方式——
+//   ① 拖动节点右下角整体缩放（DOM widget 吸收节点多余高度，原生行为）；
+//   ② 拖动面板底部手柄单独调高面板（只改节点总高，不动其它控件）。
+// text / override_text 均走新前端原生渲染：text 为纯连线端口（force_input，无文本框）；
+// 文本区高度随节点拖拽右下角伸缩（原生行为，勿再覆写 widget.computeSize，否则新前端布局错乱）。
 import { app } from "../../../scripts/app.js";
 
 const NODE_NAME = "TextCacheWithHistory";
-const PANEL_H = 160; // 默认面板高度（px），弹性保底值
+const PANEL_H = 160; // 默认面板高度（px）
+const PANEL_MIN = 80; // 面板最小高度（px，拖拽手柄/节点缩放的硬下限）
+const PANEL_MAX = 1000; // 面板最大高度（px，拖拽手柄上限）
 const ROW_BRIEF_MAX = 120; // 行内展示的截断长度（字符）
-const RESIZABLE_INPUTS = ["override_text"]; // 可拖拽调高的输入框 widget 名（必须与后端输入 id 一致）
 
 const STYLE_ID = "0daye-histpanel-style";
 function ensureStyle() {
@@ -32,6 +36,10 @@ function ensureStyle() {
     .od-hp-tip{position:fixed;z-index:9999;max-width:520px;white-space:pre-wrap;word-break:break-word;
       background:#0f0f13;border:1px solid #55555f;color:#e6e6ee;font-size:12px;line-height:1.5;
       padding:6px 8px;border-radius:4px;box-shadow:0 2px 10px rgba(0,0,0,.5);pointer-events:none;}
+    .od-hp-grip{flex:none;height:8px;cursor:ns-resize;margin:2px -6px -4px;
+      background:linear-gradient(to bottom,transparent 2px,#3a3a44 2px,#3a3a44 3px,transparent 3px,
+        transparent 5px,#3a3a44 5px,#3a3a44 6px,transparent 6px);}
+    .od-hp-grip:hover{background-color:#2a2a31;}
   `;
   document.head.appendChild(el);
 }
@@ -42,96 +50,6 @@ function autoAssignKey(node) {
   if (kw && (kw.value === -1 || kw.value === "-1")) kw.value = node.id;
 }
 
-// —— 隐藏 text 文本框，只保留置顶可连线端口（节省节点区域）——
-// text 后端为可连线输入（required 组第一位 → 端口在节点最上方）。ComfyUI 原生支持 widget 隐藏
-// （w.hidden=true 后节点布局跳过它，输入端口仍独立渲染），故此处直接隐藏文本框。
-function hideTextWidget(node) {
-  if (node.__odHidText) return;
-  const w = node.widgets?.find((x) => x.name === "text");
-  if (!w) return;
-  w.hidden = true;
-  node.__odHidText = true;
-  try {
-    const cs = node.computeSize?.(node.size[0]);
-    if (cs && Array.isArray(cs) && cs[1] > 0) node.setSize?.(node.size[0], cs[1]);
-  } catch (_) {}
-  node.setDirtyCanvas?.(true, true);
-}
-
-// —— 让多行输入框（text / override_text）支持拖拽调节高度 ——
-// ComfyUI 的 multiline widget 本身不绑定「拖拽同步节点高度」：textarea 有 DOM 层，
-// 但 widget 逻辑高度固定，拖了不会驱动节点重排。这里给 textarea 加 CSS resize 手柄，
-// 拖拽时（DOM resize 事件 + pointerup 兜底）把新高度实时写回 widget 的 computeSize，
-// 再重算节点总高并重绘，使输入框区（节点上边框）高度可自由伸缩。
-function makeResizableTextarea(node, wName) {
-  const w = node.widgets?.find((x) => x.name === wName);
-  if (!w || w.__odRz) return;
-  const TA_MIN = 38; // 拖拽最小高度（px）
-
-  const bind = () => {
-    const ta = w.element;
-    if (!ta || ta.tagName !== "TEXTAREA") return false; // DOM 未就绪，等下一次绘制
-    ta.style.resize = "vertical";
-    ta.style.overflowY = "auto";
-    ta.style.minHeight = `${TA_MIN}px`;
-    let base = Math.max(TA_MIN, ta.offsetHeight || 60);
-
-    const sync = () => {
-      const h = Math.max(TA_MIN, ta.offsetHeight);
-      const delta = h - base;
-      if (Math.abs(delta) < 2) return;
-      base = h;
-      const width = node.size?.[0] ?? 300;
-      w.computeSize = (cw) => [cw ?? width, h + 12]; // 12 = 标题/描边余量
-      if (typeof w.computeLayoutSize === "function") {
-        w.computeLayoutSize = () => ({ minHeight: h + 12, minWidth: 1 });
-      }
-      // 重算节点高度：优先走 node.computeSize 汇总 widget 高度，失败则按增量调整
-      let nh = 0;
-      try {
-        const cs = node.computeSize?.(node.size[0]);
-        if (cs && Array.isArray(cs) && cs[1] > 0) nh = cs[1];
-      } catch (_) {}
-      if (!nh) nh = node.size[1] + delta;
-      node.setSize?.(node.size[0], nh);
-      node.setDirtyCanvas?.(true, true);
-    };
-    ta.addEventListener("resize", sync); // CSS resize 手柄拖拽时实时触发
-    ta.addEventListener("pointerup", sync, true); // 兜底：拖拽结束再同步一次
-    w.__odRz = true;
-    return true;
-  };
-
-  if (!bind()) {
-    // widget DOM 尚未创建（首次绘制前拿不到 element）：挂到 onDrawForeground 上重试
-    const draw = node.onDrawForeground?.bind(node);
-    node.onDrawForeground = function (...args) {
-      draw?.apply(this, args);
-      bind();
-    };
-  }
-}
-
-// —— 节点内绘制一行注释：说明置顶 text 端口的用途（端口名保持 text，注释可见不占布局）——
-function attachTextHint(node) {
-  if (node.__odHint) return;
-  node.__odHint = true;
-  const draw = node.onDrawForeground?.bind(node);
-  node.onDrawForeground = function (ctx, ...rest) {
-    draw?.apply(this, [ctx, ...rest]);
-    try {
-      ctx.save();
-      ctx.font = "11px 'Microsoft YaHei', 'PingFang SC', sans-serif";
-      ctx.fillStyle = "rgba(138,143,152,0.9)";
-      // text 端口在节点最上方一行（文本框已隐藏，该行右侧空出），注释画在标题栏下该行内
-      const x = this.pos[0] + 54; // 避开左侧端口 + "text" 标签
-      const y = this.pos[1] + (this.title_height ?? this.titleHeight ?? 30) + 15;
-      ctx.fillText("text 端口 ← 上游 LLM（静音自动回退历史）", x, y);
-      ctx.restore();
-    } catch (_) {}
-  };
-}
-
 // —— 面板构建 ——
 function makePanel() {
   ensureStyle();
@@ -139,16 +57,50 @@ function makePanel() {
   root.className = "od-hp";
   const header = document.createElement("div");
   header.className = "od-hp-header";
-  header.textContent = "历史记录（50 条 · 悬停看全文）";
+  header.textContent = "历史记录（最多50条，悬停看全文）";
   const list = document.createElement("div");
   list.className = "od-hp-list";
+  const grip = document.createElement("div");
+  grip.className = "od-hp-grip";
+  grip.title = "拖拽调整面板高度";
   root.appendChild(header);
   root.appendChild(list);
+  root.appendChild(grip);
   const tip = document.createElement("div");
   tip.className = "od-hp-tip";
   tip.style.display = "none";
   document.body.appendChild(tip);
-  return { root, list, tip };
+  return { root, list, grip, tip };
+}
+
+// —— 面板底部手柄：单独拖拽调整面板高度 ——
+// 原理：面板是节点内唯一弹性吸收高度的 DOM widget，拖手柄 = 按增量调节点总高。
+// 坐标换算：root.offsetHeight / clientY 是屏幕像素，node.size 是画布坐标，需除以画布缩放。
+function attachResizeGrip(node, p) {
+  let dragging = false;
+  let startY = 0;
+  let startH = 0;
+  p.grip.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    dragging = true;
+    startY = ev.clientY;
+    startH = p.root.offsetHeight;
+    try { p.grip.setPointerCapture(ev.pointerId); } catch (_) {}
+  });
+  p.grip.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    ev.stopPropagation();
+    const target = Math.max(PANEL_MIN, Math.min(PANEL_MAX, startH + (ev.clientY - startY)));
+    const delta = target - p.root.offsetHeight;
+    if (Math.abs(delta) < 1) return;
+    const scale = app.canvas?.ds?.scale || 1;
+    node.setSize([node.size[0], node.size[1] + delta / scale]);
+    node.setDirtyCanvas?.(true, true);
+  });
+  const end = () => { dragging = false; };
+  p.grip.addEventListener("pointerup", end);
+  p.grip.addEventListener("pointercancel", end);
 }
 
 function attachPanel(node) {
@@ -157,12 +109,13 @@ function attachPanel(node) {
   const widget = node.addDOMWidget("0daye_histpanel", "histpanel", p.root, {
     serialize: false,
     hideOnZoom: false,
-    getMinHeight: () => PANEL_H,
+    getMinHeight: () => PANEL_MIN,
   });
-  // 弹性保底：节点被拖高时，多余高度由本 widget 吸收（面板自然变高）
-  widget.computeLayoutSize = () => ({ minHeight: PANEL_H, minWidth: 1 });
+  // 弹性保底取 PANEL_MIN：节点被拖高时多余高度由本 widget 吸收，也可缩到最小 80px
+  widget.computeLayoutSize = () => ({ minHeight: PANEL_MIN, minWidth: 1 });
   p.widget = widget;
   node._odHp = { ...p, widget };
+  attachResizeGrip(node, p);
 
   updatePanel(node, []);
 }
@@ -335,9 +288,9 @@ app.registerExtension({
       const r = onNodeCreated?.apply(this, arguments);
       autoAssignKey(this);
       attachPanel(this);
-      hideTextWidget(this);
-      attachTextHint(this);
-      for (const n of RESIZABLE_INPUTS) makeResizableTextarea(this, n);
+      // 新建节点默认面板 160px：保底是 80（PANEL_MIN），此处一次性补齐差值；
+      // 加载工作流走 configure（size 用保存值），不会经过这里。
+      try { this.setSize([this.size[0], this.size[1] + (PANEL_H - PANEL_MIN)]); } catch (_) {}
       return r;
     };
 
@@ -346,9 +299,6 @@ app.registerExtension({
     nodeType.prototype.configure = function () {
       const rc = origConfigure?.apply(this, arguments);
       autoAssignKey(this);
-      hideTextWidget(this);
-      attachTextHint(this);
-      for (const n of RESIZABLE_INPUTS) makeResizableTextarea(this, n);
       return rc;
     };
   },
