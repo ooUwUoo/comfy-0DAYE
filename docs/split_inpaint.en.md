@@ -1,4 +1,4 @@
-# Split Inpaint (蒙版分块重绘)
+# Split Inpaint
 
 [中文](split_inpaint.zh-CN.md) | [Back to README](../README.md)
 
@@ -19,23 +19,25 @@ Non-vision models in edit mode automatically fall back to img2img.
 
 Sampling speed depends only on canvas size; effective mask-region resolution ≈ canvas long edge / context factor.
 
+> Option labels are shown in Chinese in the node UI; the English gloss after each is for reference.
+
 | Profile | Context × Long edge | Region pixels | Best for |
 |---|---|---|---|
-| 极速轻绘 (0.6MP) | 1.5 × 768 | ~512px | SDXL/legacy models, quick tests |
-| 快速轻绘 (1.0MP) | 2.0 × 1024 | ~512px | Fast drafts |
-| 日常均衡 (1.4MP) (default) | 1.6 × 1216 | ~760px | Daily use |
-| 小物精修 (1.8MP) | 1.3 × 1344 | ~1030px | Small objects: jewelry, faces |
-| 关联融合 (2.3MP) | 2.2 × 1536 | ~700px | Large areas: sky, backgrounds |
-| 极致画质 (4.0MP) | 1.3 × 2048 | ~1575px | Qwen 2.1 native 2K (VRAM-heavy) |
-| 自定义 | manual sliders | - | Full manual control |
+| 极速轻绘 (0.6MP) — Turbo | 1.5 × 768 | ~512px | SDXL/legacy models, quick tests |
+| 快速轻绘 (1.0MP) — Fast | 2.0 × 1024 | ~512px | Fast drafts |
+| 日常均衡 (1.4MP) (default) — Daily balanced | 1.6 × 1216 | ~760px | Daily use |
+| 小物精修 (1.8MP) — Small-object refine | 1.3 × 1344 | ~1030px | Small objects: jewelry, faces |
+| 关联融合 (2.3MP) — Context fusion | 2.2 × 1536 | ~700px | Large areas: sky, backgrounds |
+| 极致画质 (4.0MP) — Max quality | 1.3 × 2048 | ~1575px | Qwen 2.1 native 2K (VRAM-heavy) |
+| 自定义 — Custom | manual sliders | - | Full manual control |
 
 ## Crop Mode (`crop_mode`)
 
 | Option | Behavior |
 |---|---|
-| 自动 (default) | Auto-detects by model class name: square crop for UNet bucket-trained models (SD1.5/SDXL/Illustrious/Pony), free aspect ratio for DiT models (Qwen 2.1/Krea2/Z-Image/Anima/Flux, etc.) |
-| 自由比例 | Crop follows mask aspect ratio — highest pixel efficiency |
-| 方形裁切 | Forced square crop, auto-shifted inward at image borders — safest for legacy models |
+| 自动 (auto, default) | Auto-detects by model class name: square crop for UNet bucket-trained models (SD1.5/SDXL/Illustrious/Pony), free aspect ratio for DiT models (Qwen 2.1/Krea2/Z-Image/Anima/Flux, etc.) |
+| 自由比例 (free ratio) | Crop follows mask aspect ratio — highest pixel efficiency |
+| 方形裁切 (square) | Forced square crop, auto-shifted inward at image borders — safest for legacy models |
 
 ## Color Matching (`color_match`)
 
@@ -67,7 +69,7 @@ Dynamic inputs `image_2` ~ `image_10` (official Autogrow style — connect one, 
 | profile | 日常均衡(1.4MP) [cf=1.6, gs=1216] | Quality preset (see table above); preset values are encoded in the option text and synced to the sliders by the frontend |
 | context_factor | 1.6 | Crop expansion factor (custom profile only) |
 | guide_size | 1216 | Sampling canvas long edge (custom profile only) |
-| crop_mode | 自动 | Crop shape (see table above) |
+| crop_mode | 自动 (auto) | Crop shape (see table above) |
 | steps | 30 | Sampling steps |
 | cfg | 1.0 | Classifier-free guidance. Qwen ~1.0, SDXL ~7 |
 | sampler_name | euler | Uses ComfyUI's full sampler list |

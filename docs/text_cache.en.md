@@ -1,10 +1,12 @@
-# Text Cache (文本缓存)
+# Text Cache
 
 [中文](text_cache.zh-CN.md) | [Back to README](../README.md)
 
 Node that buffers the text output of upstream LLM nodes (prompt expansion / translation, etc.), so you don't have to re-run the LLM every time you want to reuse a good result.
 
 **Category:** `0DAYE`
+
+> UI option values are shown in Chinese in the node; the English gloss in parentheses is for reference.
 
 ## Modes (`mode`)
 

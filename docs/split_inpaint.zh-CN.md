@@ -1,6 +1,6 @@
 # 蒙版分块重绘（Split Inpaint）
 
-[English](split_inpaint.en.md) | [返回首页](../README.md)
+[English](split_inpaint.en.md) | [返回首页](../README.zh-CN.md)
 
 按蒙版连通域自动切分（OpenCV `connectedComponentsWithStats`），每个区域独立裁剪 → 放大 → 编码 → 采样 → 颜色匹配 → 羽化贴回。
 

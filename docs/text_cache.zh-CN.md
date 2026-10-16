@@ -1,6 +1,6 @@
 # 文本缓存（Text Cache）
 
-[English](text_cache.en.md) | [返回首页](../README.md)
+[English](text_cache.en.md) | [返回首页](../README.zh-CN.md)
 
 接住上游 LLM 节点（提示词扩写/翻译等）输出的文本：跑一次得到好结果后，不必每次跑图都重新调 LLM。
 
