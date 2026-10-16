@@ -19,7 +19,15 @@
 
 text 为纯连线输入端口（force_input：绿色圆点、无文本框，optional → 位于其它控件下方），
 接上游直通；手动输入/覆盖请用 override_text 文本框（socketless）：「回填」按钮写入它并切
-mode=自动，清空它即可恢复直通。
+mode=自动，清空它即可恢复直通（面板标题栏另有「清空覆盖」按钮一键清空）。
+
+触发词前缀（v4 新增，三种模式外层统一生效，输出恒为「前缀 + 主体」，前缀固定段首）：
+  - prefix：socketless 多行文本框，手动触发词，逗号/换行分隔，可随时增删改，随工作流保存；
+    冻结 override_text 后仍可独立改前缀，下次出图即生效、不破坏冻结。
+  - trigger_text：optional + forceInput 纯端口，接 LoraManager 等加载器的 trigger_words 输出，
+    随 LoRA 开关动态变化（仅 active 的 LoRA 贡献词）；未接/静音收 None 兜底空。
+  - 手动框词在前、动态端口词在后，保序去重，空项自动跳过（兼容 LoraManager 的 ",, " 分隔）。
+  - 历史里记的是拼接后的完整文本；回填的全文若已带当前前缀则不重复拼接。
 
 历史：
   - 按 history_key 分抽屉隔离。key = -1 表示「自动」：前端会在节点创建时把当前
@@ -28,6 +36,8 @@ mode=自动，清空它即可恢复直通。
   - 每抽屉最多 HISTORY_MAX（50）条，去重（与最新一条相同则不重复入列）。
   - 只存在进程内存（模块级），重启 ComfyUI 即清空。
 """
+
+import re
 
 from comfy_api.latest import io
 
@@ -41,6 +51,20 @@ def _history_bucket(key):
     if key is None or key < 0:
         key = 0  # 兜底：前端正常会把 -1 替换成节点实例 id；API 直调时归 0 号抽屉
     return _HISTORY.setdefault(key, {"texts": []})["texts"]
+
+
+def latest_history_text(history_key):
+    """只读查询：某抽屉历史最新一条（无则 ""）。供同插件 SaveImageMetadata 静态追溯回退用——
+    文本缓存在采样链上游、必先于保存节点执行（拓扑序），同一遍运行内读到的就是本轮实际输出文本；
+    上游被静音时读到的是上一轮的冻结文本。只读，不创建空抽屉。"""
+    try:
+        key = int(history_key)
+    except (TypeError, ValueError):
+        key = 0
+    if key < 0:
+        key = 0
+    texts = _HISTORY.get(key, {}).get("texts") or []
+    return texts[0] if texts else ""
 
 
 def _record(texts, text):
@@ -59,6 +83,35 @@ def _pick(texts, history_index):
     return texts[idx]
 
 
+def _split_terms(text):
+    """触发词文本切项：英文逗号/中文逗号/换行分隔，strip 后去空项。
+    LoraManager 的 trigger_words 用 ",, " 连接多组词，连续逗号产生的空项在此自然丢弃。"""
+    if not isinstance(text, str) or not text:
+        return []
+    return [t.strip() for t in re.split(r"[,，\r\n]+", text) if t.strip()]
+
+
+def _compose(body, prefix="", trigger_text=""):
+    """把「手动 prefix 框 + 动态 trigger_text 端口」的触发词保序去重后，拼到主体段首。
+
+    顺序：手动框词在前（用户显式控制优先），动态端口词在后；统一用 ", " 连接，恒居段首
+    （CLIP 位置注意力前段权重高）。主体已以该前缀开头时（典型：历史回填写入的是旧拼接全文）
+    不重复拼接，直接返回主体。
+    """
+    body = body or ""
+    terms, seen = [], set()
+    for term in _split_terms(prefix) + _split_terms(trigger_text):
+        if term not in seen:
+            seen.add(term)
+            terms.append(term)
+    if not terms:
+        return body
+    head = ", ".join(terms)
+    if body == head or body.startswith(head + ","):
+        return body
+    return head + ", " + body if body else head
+
+
 def _preview(texts):
     if not texts:
         return "(历史为空)"
@@ -70,7 +123,7 @@ def _preview(texts):
 
 
 class TextCacheWithHistory(io.ComfyNode):
-    """文本缓存与历史回溯 v3：自动判定（覆盖→直通→历史），按 key 隔离，50 条历史。"""
+    """文本缓存与历史回溯 v4：自动判定（覆盖→直通→历史）+ 触发词前缀拼接，按 key 隔离，50 条历史。"""
 
     @classmethod
     def define_schema(cls):
@@ -89,11 +142,30 @@ class TextCacheWithHistory(io.ComfyNode):
                     tooltip="接上游 LLM 的文本输出（STRING 线，仅端口无文本框）。上游组被静音（Ctrl+M）时收不到数据 → 自动切到历史",
                 ),
                 io.String.Input(
+                    "trigger_text",
+                    optional=True,      # 同 text：不接线/加载器静音都不能导致执行失败
+                    force_input=True,   # 纯端口无文本框，专接 LoraManager 等加载器的 trigger_words
+                    tooltip=(
+                        "动态触发词（STRING 线，仅端口）：接 LoraManager 等加载器的 trigger_words 输出，"
+                        "只含 active 开启的 LoRA 的词；与手动 prefix 合并去重后拼在段首。未接/静音时忽略"
+                    ),
+                ),
+                io.String.Input(
                     "override_text",
                     multiline=True,
                     default="",
                     socketless=True,
-                    tooltip="手动覆盖：非空时优先输出并记入历史；清空恢复上游",
+                    tooltip="手动覆盖：非空时优先输出并记入历史；清空恢复上游（面板标题栏「清空覆盖」按钮可一键清空）",
+                ),
+                io.String.Input(
+                    "prefix",
+                    multiline=True,
+                    default="",
+                    socketless=True,
+                    tooltip=(
+                        "触发词前缀（手动，逗号或换行分隔多个）：始终拼在最终输出段首，与模式无关；"
+                        "可随时增删改，冻结 override_text 后改这里也立即生效"
+                    ),
                 ),
                 io.Combo.Input(
                     "mode",
@@ -120,7 +192,7 @@ class TextCacheWithHistory(io.ComfyNode):
                 io.String.Output(
                     "text",
                     display_name="text",
-                    tooltip="输出文本：自动/上游=最新文本或覆盖文本；历史=选中的一条",
+                    tooltip="输出文本：触发词前缀（prefix 框 + trigger_text 端口，去重）拼在段首 + 模式决定的主体（覆盖/上游/历史）",
                 ),
                 io.String.Output(
                     "history_list",
@@ -130,35 +202,48 @@ class TextCacheWithHistory(io.ComfyNode):
             ],
             description=(
                 "文本缓存/上游/历史：自动判定（覆盖文本→上游直通→历史兜底）；"
+                "触发词前缀（手动 prefix 框 + trigger_text 动态端口）恒拼段首、保序去重；"
                 "按 history_key 隔离，每抽屉最近 50 条去重；内存态，重启即清空。"
             ),
         )
 
     @classmethod
-    def execute(cls, mode, text=None, override_text="", history_key=-1, history_index=0):
-        # text 是 optional 输入：未连线时执行器根本不传该 kwarg（必须有默认值），
+    def execute(cls, mode, text=None, trigger_text=None, override_text="", prefix="",
+                history_key=-1, history_index=0):
+        # text / trigger_text 都是 optional 输入：未连线时执行器根本不传该 kwarg（必须有默认值），
         # 上游被静音时传 None；两种「空」统一兜底为 ""。
         if text is None:
             text = ""
+        if trigger_text is None:
+            trigger_text = ""
         if override_text is None:
             override_text = ""
+        if prefix is None:
+            prefix = ""
 
         texts = _history_bucket(history_key)
 
+        # 模式只决定「主体」；触发词前缀在主体确定后统一拼（历史模式复用旧文，不重复入历史）
+        record = False  # 该主体是否需要记入历史（与旧逻辑一致：仅 自动①②/上游非空 记录）
         if mode == "上游":
-            _record(texts, text)
-            out_text = text
+            body = text
+            record = bool(text)
         elif mode == "历史":
-            out_text = _pick(texts, history_index)
+            body = _pick(texts, history_index)
         else:  # "自动" 及未知值兜底（旧值 auto/直通/手动 等一律走自动判定，安全）
             if override_text:
-                _record(texts, override_text)
-                out_text = override_text
+                body = override_text
+                record = bool(override_text)
             elif text:
-                _record(texts, text)
-                out_text = text
+                body = text
+                record = bool(text)
             else:
-                out_text = _pick(texts, history_index)
+                body = _pick(texts, history_index)
+
+        # 历史记的是拼接后的完整文本：保存节点历史回退同遍即可读到含触发词的最终 prompt
+        out_text = _compose(body, prefix, trigger_text)
+        if record:
+            _record(texts, out_text)
 
         # 关键：必须带 ui 返回，否则后端 len(output_ui)>0 不成立 → 不广播 executed
         # 事件 → 前端历史面板永远收不到刷新数据。ui 的值必须是列表（后端会按可迭代展开）。

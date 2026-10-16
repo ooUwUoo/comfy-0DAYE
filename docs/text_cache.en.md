@@ -21,17 +21,33 @@ Node that buffers the text output of upstream LLM nodes (prompt expansion / tran
 | Input | Description |
 |---|---|
 | `text` | Connect the upstream LLM output — a socket-only input port (green dot, no textbox; sits below the widgets as it is optional). When the upstream group is **muted (Ctrl+M)**, this receives empty → `自动` falls back to history automatically |
-| `override_text` | Manual override text (widget only, not linkable). Highest priority in `自动` mode; output & recorded. Clear it to return to live passthrough |
+| `trigger_text` | Dynamic trigger words — a socket-only port; connect a loader's `trigger_words` output (e.g. LoraManager). Only active LoRAs contribute words. Ignored when unconnected/muted |
+| `override_text` | Manual override text (multiline widget; the small dot in front of the widget can also be dragged to convert it into an input port). Highest priority in `自动` mode; output & recorded. Clear it to return to live passthrough (the `清空覆盖` button in the panel header clears it in one click) |
+| `prefix` | Manual trigger-word prefix (multiline widget; separate multiple words with commas/Chinese commas/newlines). Always prepended to the **start** of the final output regardless of mode; edit freely at any time |
 | `history_key` | `-1` = auto (each node instance gets its own isolated history via its instance id). Set the same number on multiple nodes to share one history |
 | `history_index` | Which history entry to output: `0` = latest, up to `49` |
 
 Outputs: `text` (result), `history_list` (numbered history with full text, `⏎` = newline placeholder).
 
+## Trigger-word prefix (LoRA keywords)
+
+The final output is always:
+
+```
+words from the prefix widget + words from the trigger_text port (order preserved, de-duplicated) + ", " + body text chosen by the mode
+```
+
+- Trigger words are fixed at the **start** (CLIP positional attention gives more weight to early tokens); manual-widget words come before dynamic-port words.
+- The widget and the port **stack**: for LoRAs without bundled trigger words (self-trained / no CivitAI metadata), just type the words into `prefix`.
+- History always stores the fully composed text; when a history entry is filled back (`回填`) and already starts with the current prefix, the prefix is not duplicated.
+- **Edit words while the body is frozen**: `override_text` freezes only the body while `prefix` stays independent — adding/removing trigger words after freezing takes effect on the next run without breaking the freeze.
+- Typical wiring: `Lora Loader (LoraManager).trigger_words` → `trigger_text`; LLM output → `text`; node output → CLIPTextEncode. With the Save Image Metadata node, the full text including trigger words reaches image metadata in the same run via the history fallback — no second run needed.
+
 ## History
 
 - Keeps the latest **50** entries per key, de-duplicated (same text as the newest entry is not re-added)
 - In-memory only — **cleared on ComfyUI restart**
-- The node's built-in panel lists the entries with hover-to-read-full-text, plus `复制` (copy to clipboard) and `回填` (fill back into `override_text`) per row; refreshes automatically after each run
+- The node's built-in panel lists the entries with hover-to-read-full-text, plus `复制` (copy to clipboard) and `回填` (fill back into `override_text`) per row; the panel header has a `清空覆盖` (clear override) button that empties `override_text` in one click (equivalent to Ctrl+A → Delete); refreshes automatically after each run
 
 ## Tips
 

@@ -15,7 +15,7 @@ const PANEL_H = 160; // 默认面板高度（px）
 const PANEL_MIN = 80; // 面板最小高度（px，拖拽手柄/节点缩放的硬下限）
 const PANEL_MAX = 1000; // 面板最大高度（px，拖拽手柄上限）
 const DEFAULT_W = 314; // 新建节点默认宽（按用户工作流实测尺寸）
-const DEFAULT_H = 360; // 新建节点默认高（同上）
+const DEFAULT_H = 448; // 新建节点默认高（v4 多了 prefix 多行框与 trigger_text 端口，相应加高）
 const ROW_BRIEF_MAX = 120; // 行内展示的截断长度（字符）
 
 const STYLE_ID = "0daye-histpanel-style";
@@ -27,7 +27,12 @@ function ensureStyle() {
     .od-hp{width:100%;height:100%;box-sizing:border-box;display:flex;flex-direction:column;
       background:#16161b;color:#cfcfd6;font-family:Consolas,'Microsoft YaHei',monospace;
       font-size:12px;line-height:1.5;padding:4px 6px;border-top:1px solid #33333c;}
-    .od-hp-header{color:#8a8f98;font-size:11px;margin-bottom:3px;flex:none;}
+    .od-hp-header{color:#8a8f98;font-size:11px;margin-bottom:3px;flex:none;
+      display:flex;align-items:center;gap:6px;}
+    .od-hp-title{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .od-hp-clear{flex:none;border:1px solid #4a4a55;background:#26262d;color:#cfcfd6;
+      border-radius:3px;padding:0 5px;font-size:11px;cursor:pointer;height:18px;line-height:16px;}
+    .od-hp-clear:hover{border-color:#a06060;background:#3a2a2c;color:#f0d0d0;}
     .od-hp-list{flex:1 1 auto;min-height:0;overflow-y:auto;}
     .od-hp-empty{color:#6b7280;font-size:11px;padding:6px 2px;}
     .od-hp-row{display:flex;align-items:center;gap:5px;padding:1px 2px;border-radius:3px;}
@@ -84,7 +89,18 @@ function makePanel() {
   root.className = "od-hp";
   const header = document.createElement("div");
   header.className = "od-hp-header";
-  header.textContent = "历史记录（最多50条，悬停看全文）";
+  const title = document.createElement("span");
+  title.className = "od-hp-title";
+  title.textContent = "历史记录（最多50条，悬停看全文）";
+  // 「清空覆盖」：纯显示层便利按钮，等价于手动 Ctrl+A→Delete；
+  // 只把 override_text widget 置空，不碰后端执行逻辑（JS 失效时手动清空仍可用）
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "od-hp-clear";
+  clearBtn.textContent = "清空覆盖";
+  clearBtn.title = "一键清空 override_text（恢复 text 直通 / 静音走历史）";
+  header.appendChild(title);
+  header.appendChild(clearBtn);
   const list = document.createElement("div");
   list.className = "od-hp-list";
   const grip = document.createElement("div");
@@ -97,7 +113,7 @@ function makePanel() {
   tip.className = "od-hp-tip";
   tip.style.display = "none";
   document.body.appendChild(tip);
-  return { root, list, grip, tip };
+  return { root, list, grip, tip, clearBtn };
 }
 
 // —— 面板底部手柄：单独拖拽调整面板高度 ——
@@ -150,6 +166,10 @@ function attachPanel(node) {
       : { minHeight: PANEL_MIN, minWidth: 1 };
   p.widget = widget;
   attachResizeGrip(node, p);
+  p.clearBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    clearOverride(node, p.clearBtn);
+  });
 
   updatePanel(node, []);
 }
@@ -260,6 +280,25 @@ function fillManual(node, txt, btn) {
   }
   try { node.setDirtyCanvas(true, true); } catch (_) {}
   flash(btn, "已回填");
+}
+
+// 一键清空 override_text：与手动 Ctrl+A→Delete 结果完全相同（仅写 widget 值，不碰执行逻辑）。
+// 若该 widget 已被拖成连线端口且接了线，运行值来自连线、清空文本框无意义，提示用户删线。
+function clearOverride(node, btn) {
+  const linked = node.inputs?.some((i) => i.name === "override_text" && i.link != null);
+  if (linked) {
+    flash(btn, "请先删线");
+    return;
+  }
+  const mw = node.widgets?.find((w) => w.name === "override_text");
+  if (mw) {
+    mw.value = "";
+    if (typeof mw.callback === "function") {
+      try { mw.callback(""); } catch (_) {}
+    }
+  }
+  try { node.setDirtyCanvas(true, true); } catch (_) {}
+  flash(btn, "已清空");
 }
 
 // —— 悬浮弹层 ——

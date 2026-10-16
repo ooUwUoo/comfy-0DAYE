@@ -47,7 +47,7 @@
 
 - **采样器识别**：inputs 同时有 `positive` / `negative` 之一 + `cfg` + `seed` / `noise_seed`（覆盖 KSampler / Advanced / SamplerCustom 及封包装）；从本节点向上 BFS，取最近一个。
 - **参数**（`seed` / `steps` / `cfg` / `sampler_name` / `scheduler` / `denoise`）：同名输入是链接就跟进（Seed 节点、KSamplerSelect），另沿 `sampler` / `scheduler` / `sigmas` / `guider` 结构链接跟进（BasicScheduler 等），深度 ≤ 5，跟进目标兜底读 value 控件。
-- **文本**：编码节点的 `text` 类控件直读；`conditioning` / `positive` / `negative` 结构链接可再深入一层（FluxGuidance 链）。`text` / `prompt` 载体链接只通往 Text Cache（读 `override_text` 冻结文本）；LLM 节点不深挖（会读到错误控件而留空——请用 `positive_node_id` 填 ID 或 `positive_text` 接线）。ConditioningZeroOut 判空。
+- **文本**：编码节点的 `text` 类控件直读；`conditioning` / `positive` / `negative` 结构链接可再深入一层（FluxGuidance 链）。`text` / `prompt` 载体链接只通往 Text Cache——优先读其运行时历史最新一条（同遍最终输出，含触发词前缀），历史为空再退回静态 `override_text`；LLM 节点不深挖（会读到错误控件而留空——请用 `positive_node_id` 填 ID 或 `positive_text` 接线）。ConditioningZeroOut 判空。
 - **模型 / LoRA**：沿采样器 `model` 链接线性走链（近→远 = 应用倒序，反转后 = 应用顺序）；认 `ckpt_name` / `unet_name` / `lora_name` 控件。哈希 = sha256 前 10 位（AutoV2），写 `<模型文件>.sha256` 边车缓存只算一次。
 
 ## 脱敏（`sanitize`）
@@ -65,7 +65,7 @@
 
 ## 已知边界
 
-- LLM / 文本缓存等运行时生成文本静态追溯不到 → `positive_node_id` 填节点 ID，或 `positive_text` / `negative_text` 手动接线
+- LLM 等运行时生成文本静态追溯不到 → `positive_node_id` 填节点 ID，或 `positive_text` / `negative_text` 手动接线。**文本缓存节点例外**：自动读其运行时历史最新一条（文本缓存在采样链上游、必先于本节点执行，同一遍运行即可读到本轮最终文本，含 `prefix` / `trigger_text` 触发词前缀，无需跑两遍）；该节点本遍未执行时才退回静态 `override_text`
 - 已适配的第三方 LoRA 加载器（在采样器 model 链上即可自动追溯，无需配置）：标准 `LoraLoader` / WAS `LoRA Loader`、rgthree `Power Lora Loader`、LoraManager `Lora Loader (LoraManager)` / `LoRA Text Loader`（含 LORA_STACK 堆栈透传）；其它冷门加载器用 `model_node_id` 指定，或 `lora_override` 手动填
 - 冷门封装导致采样参数 / 模型 / LoRA 追溯不到 → `sampler_node_id` 指定采样器解析、`model_node_id` 指定模型/LoRA 来源节点，或直接用 `seed_override` / `steps_override` / `lora_override` 手动覆盖
 - 多条独立采样流水线时取离本节点最近的采样器；`sampler_node_id` 可显式指定，绕过该推断

@@ -41,6 +41,8 @@ import folder_paths
 from comfy.cli_args import args
 from comfy_api.latest import io
 
+from .text_cache import latest_history_text
+
 # ---------------------------------------------------------------------------
 # 静态图追溯工具（全部只读 hidden prompt 字典，不触发任何执行）
 # ---------------------------------------------------------------------------
@@ -153,7 +155,13 @@ def _resolve_text(prompt, node_id, hop=0):
         return ""
     inputs = node.get("inputs", {})
     if node.get("class_type") == "TextCacheWithHistory":
-        # 本插件的文本缓存节点：输出是运行时生成的，静态只有 override_text（用户冻结的文本）可读
+        # 本插件的文本缓存节点：优先读后端运行时历史最新一条——它是同遍执行后的最终输出
+        # （v4 起含 prefix/trigger_text 触发词前缀；override_text 只是主体，直读会漏掉前缀）。
+        # 文本缓存在采样链上游、必先于本节点执行（拓扑序），同一遍运行内即可读到本轮文本。
+        # 历史为空（节点摆了但本遍没执行过）再退回静态 override_text 兜底。
+        hist = latest_history_text(inputs.get("history_key"))
+        if hist:
+            return hist
         v = inputs.get("override_text")
         return v if isinstance(v, str) else ""
     if node.get("class_type") == "ConditioningZeroOut":
@@ -171,14 +179,20 @@ def _resolve_text(prompt, node_id, hop=0):
             r = _resolve_text(prompt, str(v[0]), hop + 1)
             if r:
                 return r
-    # 文本载体链接（text/prompt…）只允许通往已知的文本缓存类节点：其 override_text 是
-    # 用户冻结的文本（权威）；其它运行时生成文本的节点（LLM 等）静态读到的是错误控件，不跟
+    # 文本载体链接（text/prompt…）只允许通往已知的文本缓存类节点：override_text 是
+    # 用户冻结的文本（权威），为空回退其运行时历史；其它运行时生成文本节点（LLM 等）
+    # 静态读到的是错误控件，不跟
     for k in ("text", "prompt", "text_g", "text_l"):
         v = inputs.get(k)
         if _is_link(v, prompt):
             t = prompt.get(str(v[0]))
             if isinstance(t, dict) and t.get("class_type") == "TextCacheWithHistory":
-                ov = t.get("inputs", {}).get("override_text")
+                t_inputs = t.get("inputs", {})
+                # 同主分支：历史最新条=同遍最终输出（含 v4 触发词前缀），优先；空再退回静态 override
+                th = latest_history_text(t_inputs.get("history_key"))
+                if th:
+                    return th
+                ov = t_inputs.get("override_text")
                 return ov if isinstance(ov, str) else ""
     return ""
 

@@ -47,7 +47,7 @@ Fully static — reads the hidden prompt graph, never triggers execution.
 
 - **Sampler detection**: nodes whose inputs include one of `positive` / `negative` plus `cfg` plus `seed` / `noise_seed` (covers KSampler / Advanced / SamplerCustom and wrappers); a BFS upward from this node takes the nearest match.
 - **Parameters** (`seed` / `steps` / `cfg` / `sampler_name` / `scheduler` / `denoise`): follow same-named input links (Seed node, KSamplerSelect) and structural links (`sampler` / `scheduler` / `sigmas` / `guider`, e.g. BasicScheduler), depth ≤ 5, falling back to the target's value widget.
-- **Text**: `text`-type widgets of encoder nodes are read directly; `conditioning` / `positive` / `negative` structural links go one level deeper (FluxGuidance chains). `text` / `prompt` links only follow to Text Cache (reads the frozen `override_text`); LLM nodes are not traced (the wrong widget would be read and left empty — instead set `positive_node_id` or wire `positive_text`). ConditioningZeroOut is treated as empty.
+- **Text**: `text`-type widgets of encoder nodes are read directly; `conditioning` / `positive` / `negative` structural links go one level deeper (FluxGuidance chains). `text` / `prompt` links only follow to Text Cache — the latest runtime-history entry (this pass's final output, including the trigger-word prefix) is read first, falling back to the static `override_text` only when history is empty; LLM nodes are not traced (the wrong widget would be read and left empty — instead set `positive_node_id` or wire `positive_text`). ConditioningZeroOut is treated as empty.
 - **Model / LoRA**: walk the sampler's `model` link linearly (nearest → farthest = application reversed; reversing gives the application order); recognise `ckpt_name` / `unet_name` / `lora_name` widgets. Hash = first 10 hex chars of sha256 (AutoV2), cached in `<model file>.sha256`.
 
 ## Sanitization (`sanitize`)
@@ -65,7 +65,7 @@ Fully static — reads the hidden prompt graph, never triggers execution.
 
 ## Known Limits
 
-- Runtime-generated text (LLM, Text Cache, …) cannot be traced statically → set `positive_node_id`, or wire `positive_text` / `negative_text`
+- Runtime-generated text (LLM, …) cannot be traced statically → set `positive_node_id`, or wire `positive_text` / `negative_text`. **Exception: the Text Cache node** — its latest runtime-history entry is read automatically (the cache runs upstream of the sampler, so the same pass already has this round's final text including the `prefix` / `trigger_text` trigger words; no second run needed); the static `override_text` is used only as a fallback when the cache did not execute in this pass
 - Third-party LoRA loaders already supported (auto-traced while on the sampler's model chain, no config): standard `LoraLoader` / WAS `LoRA Loader`, rgthree `Power Lora Loader`, LoraManager `Lora Loader (LoraManager)` / `LoRA Text Loader` (incl. LORA_STACK passthrough); for other loaders use `model_node_id` or `lora_override`
 - Unusual wrappers may hide sampler settings / model / LoRA → set `sampler_node_id` (sampler) or `model_node_id` (model/LoRA source), or use `seed_override` / `steps_override` / `lora_override`
 - With several independent sampling pipelines the sampler nearest to this node is used; `sampler_node_id` overrides that inference
