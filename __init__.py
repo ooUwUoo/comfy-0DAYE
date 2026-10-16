@@ -146,7 +146,7 @@ class SplitInpaint(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="SplitInpaint",
-            display_name="蒙版分块重绘",
+            display_name="Split Inpaint",
             category="0DAYE",
             inputs=[
                 io.Model.Input("model"),
@@ -521,7 +521,8 @@ NODE_CLASS_MAPPINGS = {
     "SaveImageMetadata": SaveImageMetadata,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "SplitInpaint": "蒙版分块重绘",
-    "TextCacheWithHistory": "文本缓存",
-    "SaveImageMetadata": "元数据存图 (Save Image Metadata)",
+    # 英文基准（ComfyUI 官方 i18n 约定）；中文显示名由 locales/zh/nodeDefs.json 提供
+    "SplitInpaint": "Split Inpaint",
+    "TextCacheWithHistory": "Text Cache",
+    "SaveImageMetadata": "Save Image Metadata",
 }

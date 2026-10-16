@@ -76,7 +76,7 @@ class TextCacheWithHistory(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="TextCacheWithHistory",
-            display_name="文本缓存",
+            display_name="Text Cache",
             category="0DAYE",
             inputs=[
                 io.String.Input(

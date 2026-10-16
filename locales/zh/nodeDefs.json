@@ -1,0 +1,11 @@
+{
+  "SplitInpaint": {
+    "display_name": "蒙版分块重绘"
+  },
+  "TextCacheWithHistory": {
+    "display_name": "文本缓存"
+  },
+  "SaveImageMetadata": {
+    "display_name": "元数据存图"
+  }
+}

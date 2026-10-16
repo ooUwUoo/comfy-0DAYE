@@ -68,6 +68,10 @@ _STRUCT_TEXT_KEYS = ("conditioning", "positive", "negative")
 _STRUCT_PARAM_KEYS = ("sampler", "scheduler", "sigmas", "guider")
 
 
+# rgthree Power Lora Loader 的动态 LoRA 字段名：lora_1, lora_2, …
+_LORA_LIST_RE = re.compile(r"lora_\d+$")
+
+
 def _is_link(v, prompt):
     """判断 prompt 里的输入值是否为链接 [node_id, slot]。
     必须与节点 id 表比对：列表型控件值（尺寸对、lora 堆栈等）会被误判。"""
@@ -191,13 +195,78 @@ def _model_chain(prompt, start_link, limit=50):
     return chain
 
 
-def _scan_models(prompt, sampler_id, fallback_order):
+def _rgthree_lora_item(v):
+    """rgthree Power Lora Loader 单条目值：[名称, 开关, 权重] 数组（其自定义组合 widget 序列化）。
+    返回 (名称, 权重)；禁用/空槽/格式不符返回 None。"""
+    if not isinstance(v, (list, tuple)) or len(v) < 2:
+        return None
+    name, enabled = v[0], v[1]
+    strength = v[2] if len(v) >= 3 and isinstance(v[2], (int, float)) else None
+    if not enabled or not isinstance(name, str) or not name or name.lower() == "none":
+        return None
+    return (name, strength)
+
+
+# LoraManager「LoRA Text Loader」的 <lora:名:模型强度(:clip强度)> 语法标签
+_LORA_TAG_RE = re.compile(r"<lora:([^:>]+):([0-9.]+)(?::[0-9.]+)?>", re.IGNORECASE)
+
+
+def _parse_lora_syntax_items(text):
+    """从 LoraManager LoRA Text Loader 的 lora_syntax 文本提取 [(名称, model强度)]。"""
+    out = []
+    for m in _LORA_TAG_RE.finditer(text):
+        try:
+            st = float(m.group(2))
+        except ValueError:
+            st = None
+        out.append((m.group(1).strip(), st))
+    return out
+
+
+def _lora_bundle_items(v):
+    """LoraManager「Lora Loader (LoraManager)」loras 组合控件值 → [(名称, model强度)]。
+    兼容三种序列化形态：{"__value__": [...]}（现行）/ 直接 list / JSON 字符串；
+    条目支持 {name,strength,clipStrength,active} 与 (名称, model强度, clip强度) 元组
+    （后者亦兼容 LORA_STACK 透传，如 Inspire 堆栈）。仅收启用条目。"""
+    if isinstance(v, dict) and isinstance(v.get("__value__"), list):
+        items = v["__value__"]
+    elif isinstance(v, list):
+        items = v
+    elif isinstance(v, str) and v.lstrip().startswith("["):
+        try:
+            items = json.loads(v)
+        except Exception:
+            return []
+    else:
+        return []
+    out = []
+    for it in items if isinstance(items, list) else []:
+        if isinstance(it, (list, tuple)) and it and isinstance(it[0], str) and it[0]:
+            st = it[1] if len(it) > 1 and isinstance(it[1], (int, float)) else None
+            out.append((it[0], st))
+            continue
+        if not isinstance(it, dict) or it.get("active", True) is False:
+            continue
+        name = it.get("name")
+        if not isinstance(name, str) or not name or name.lower() == "none":
+            continue
+        st = it.get("strength")
+        out.append((name, st if isinstance(st, (int, float)) else None))
+    return out
+
+
+def _scan_models(prompt, sampler_id, fallback_order, start_node_id=None):
     """找主模型与 LoRA。返回 (模型文件名, 模型目录类型, [(lora名, sm, sc)]，按应用顺序)。
-    优先沿采样器 model 链走；找不到采样器时退回 BFS 顺序扫描。"""
+    start_node_id（model_node_id 兜底）非空时从该节点起沿其 model 链上溯；
+    否则沿采样器 model 链走；两者都拿不到时退回 BFS 顺序扫描。
+    LoRA 识别：lora_name（标准 LoraLoader）+ lora_N（rgthree Power Lora Loader 动态字段）。"""
     model_name, model_kind = None, None
     loras = []
     chain = []
-    if sampler_id is not None:
+    if start_node_id is not None and start_node_id in prompt:
+        chain = [start_node_id] + _model_chain(
+            prompt, prompt[start_node_id].get("inputs", {}).get("model"))
+    elif sampler_id is not None:
         s_inputs = prompt[sampler_id].get("inputs", {})
         chain = _model_chain(prompt, s_inputs.get("model"))
     scan = chain if chain else fallback_order
@@ -207,6 +276,23 @@ def _scan_models(prompt, sampler_id, fallback_order):
         ln = inputs.get("lora_name")
         if isinstance(ln, str) and ln:
             loras.append((ln, inputs.get("strength_model"), inputs.get("strength_clip")))
+        # rgthree Power Lora Loader：lora_N = [名称, 开关, 权重]；启用条目按 lora_1→N 顺序收集
+        for key, val in inputs.items():
+            if _LORA_LIST_RE.fullmatch(key):
+                item = _rgthree_lora_item(val)
+                if item:
+                    loras.append((item[0], item[1], None))
+        # LoraManager：loras 组合控件（Lora Loader）+ lora_stack 透传 + lora_syntax 文本（LoRA Text Loader）
+        if "loras" in inputs:
+            for nm, st in _lora_bundle_items(inputs.get("loras")):
+                loras.append((nm, st, None))
+        if isinstance(inputs.get("lora_stack"), list):
+            for nm, st in _lora_bundle_items(inputs["lora_stack"]):
+                loras.append((nm, st, None))
+        syn = inputs.get("lora_syntax")
+        if isinstance(syn, str) and syn:
+            for nm, st in _parse_lora_syntax_items(syn):
+                loras.append((nm, st, None))
         if model_name is None:
             for key, kind in (("ckpt_name", ("checkpoints",)),
                               ("unet_name", ("diffusion_models", "unet"))):
@@ -300,10 +386,12 @@ def _parse_lora_override(text, with_hash=True):
     return items
 
 
-def _extract_info(prompt, unique_id, width, height, with_hash=True, sampler_override=None):
+def _extract_info(prompt, unique_id, width, height, with_hash=True, sampler_override=None,
+                  model_start=None):
     """汇总全部自动提取结果。prompt 为空（异常场景）时只剩尺寸。
     with_hash=False 时跳过模型哈希（仅为文件名占位符解析的场景省一次大文件 IO）。
-    sampler_override 非空时指定采样器节点 ID（手动兜底），不再走 BFS 自动识别。"""
+    sampler_override 非空时指定采样器节点 ID（手动兜底），不再走 BFS 自动识别。
+    model_start（model_node_id 兜底）非空时从该节点起扫模型/LoRA，不再从采样器链走。"""
     info = {
         "positive": "", "negative": "",
         "seed": None, "steps": None, "cfg": None,
@@ -337,7 +425,7 @@ def _extract_info(prompt, unique_id, width, height, with_hash=True, sampler_over
             if _is_link(v, prompt):
                 info[field] = _resolve_text(prompt, str(v[0]))
 
-    model_name, model_kind, loras = _scan_models(prompt, sampler_id, order)
+    model_name, model_kind, loras = _scan_models(prompt, sampler_id, order, start_node_id=model_start)
     if model_name:
         info["model_name"] = os.path.splitext(os.path.basename(model_name))[0]
         if with_hash:
@@ -432,6 +520,14 @@ def build_parameters(info):
     return "\n".join(lines)
 
 
+def _quality_value(q, default=85):
+    """画质档位 → 数值（兼容旧的整数输入）：从 "高 (85)" 之类的文本里取数字，钳制到 1–100。"""
+    m = re.search(r"\d+", str(q))
+    if not m:
+        return default
+    return max(1, min(100, int(m.group(0))))
+
+
 def _user_comment_bytes(text):
     """EXIF UserComment 编码（与 piexif/A1111 同约定，CivitAI 用 exiftool 读取）：
     纯 ASCII → b"ASCII\\0\\0\\0" + ascii；含非 ASCII → b"UNICODE\\0" + utf-16（带 BOM）。"""
@@ -516,7 +612,7 @@ class SaveImageMetadata(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="SaveImageMetadata",
-            display_name="元数据存图 (Save Image Metadata)",
+            display_name="Save Image Metadata",
             category="0DAYE",
             search_aliases=["save image", "save image metadata", "metadata",
                             "civitai", "civitai metadata", "a1111", "pnginfo", "元数据存图", "存图"],
@@ -560,9 +656,15 @@ class SaveImageMetadata(io.ComfyNode):
                     "sanitize", default=True, label_on="脱敏", label_off="不脱敏",
                     tooltip="保存前脱敏：API key/token/密码等敏感控件值与常见令牌格式打码为 [REDACTED]，防止随元数据外泄",
                 ),
+                io.Combo.Input(
+                    "quality",
+                    options=["极高 (95)", "高 (85)", "低 (78)"],
+                    default="高 (85)",
+                    tooltip="JPEG/WEBP 画质档位（PNG 无损，不受影响）：极高=95 / 高=85 / 低=78；quality_custom 填正数时本项被覆盖",
+                ),
                 io.Int.Input(
-                    "quality", default=95, min=1, max=100,
-                    tooltip="JPEG/WEBP 画质（PNG 无损，不受影响）",
+                    "quality_custom", default=-1, min=-1, max=100,
+                    tooltip="手动画质数值（-1=跟随上方档位）。填 1–100 时优先生效，覆盖三档选择",
                 ),
                 io.Int.Input(
                     "positive_node_id", default=-1, min=-1, max=999999,
@@ -584,9 +686,9 @@ class SaveImageMetadata(io.ComfyNode):
                     "steps_override", default=-1, min=-1, max=1000000,
                     tooltip="手动指定步数（-1=不覆盖）。优先级最高",
                 ),
-                io.String.Input(
-                    "model_override", default="", socketless=True,
-                    tooltip="手动指定主模型文件名（可含子目录与扩展名，留空=不覆盖）；填了按该名字查文件算哈希。优先级最高",
+                io.Int.Input(
+                    "model_node_id", default=-1, min=-1, max=999999999,
+                    tooltip="模型/LoRA 兜底：-1=沿采样器 model 链自动追溯；填节点 ID（如 rgthree Power Lora Loader、Checkpoint 加载器）则从该节点起扫模型与 LoRA 并沿其 model 链上溯。优先级低于 lora_override",
                 ),
                 io.String.Input(
                     "lora_override", default="", multiline=True, socketless=True,
@@ -622,10 +724,10 @@ class SaveImageMetadata(io.ComfyNode):
     def execute(cls, images, filename_prefix="ComfyUI_Meta",
                 save_png=True, extra_format="JPEG", mode="CivitAI 元数据",
                 embed_parameters=True, embed_lora=True, embed_workflow=False,
-                sanitize=True, quality=95,
+                sanitize=True, quality="高 (85)", quality_custom=-1,
                 positive_node_id=-1, negative_node_id=-1, sampler_node_id=-1,
                 seed_override=-1, steps_override=-1,
-                model_override="", lora_override="",
+                model_node_id=-1, lora_override="",
                 positive_text=None, negative_text=None):
         hidden = getattr(cls, "hidden", None)
         prompt = getattr(hidden, "prompt", None)
@@ -643,6 +745,7 @@ class SaveImageMetadata(io.ComfyNode):
             int(images[0].shape[1]), int(images[0].shape[0]),
             with_hash=write_meta,
             sampler_override=(sampler_node_id if isinstance(sampler_node_id, int) and sampler_node_id >= 0 else None),
+            model_start=(str(model_node_id) if isinstance(model_node_id, int) and model_node_id >= 0 else None),
         )
         # 提示词覆盖（节点 ID 兜底 → 手动接线最高）：参数串与 %prompt% 占位符共用最终结果
         if isinstance(prompt, dict):
@@ -656,19 +759,11 @@ class SaveImageMetadata(io.ComfyNode):
         if isinstance(negative_text, str) and negative_text.strip():
             info["negative"] = negative_text
 
-        # 采样参数 / 模型 / LoRA 手动兜底（优先级最高：覆盖自动追溯与 sampler_node_id 结果）
+        # 采样参数 / LoRA 手动兜底（优先级最高：覆盖自动追溯与 sampler_node_id 结果）
         if isinstance(seed_override, int) and seed_override >= 0:
             info["seed"] = seed_override
         if isinstance(steps_override, int) and steps_override > 0:
             info["steps"] = steps_override
-        if isinstance(model_override, str) and model_override.strip():
-            raw = model_override.strip()
-            info["model_name"] = os.path.splitext(os.path.basename(raw))[0]
-            info["model_hash"] = None
-            if write_meta:
-                path = _find_model_path(raw, ("checkpoints", "diffusion_models", "unet"))
-                if path:
-                    info["model_hash"] = _sha256_10(path)
         if isinstance(lora_override, str) and lora_override.strip():
             info["loras"] = _parse_lora_override(lora_override, with_hash=write_meta)
 
@@ -696,6 +791,9 @@ class SaveImageMetadata(io.ComfyNode):
         meta_prompt = _sanitize_obj(prompt) if (sanitize and prompt is not None) else prompt
         meta_pnginfo = _sanitize_obj(extra_pnginfo) if (sanitize and extra_pnginfo) else extra_pnginfo
 
+        # 手动画质数值优先生效（1–100），否则按三档文本解析（_quality_value 两者都兼容）
+        q_raw = quality_custom if isinstance(quality_custom, int) and quality_custom > 0 else quality
+        q_val = _quality_value(q_raw)
         extra = {"JPEG": "JPEG", "WEBP": "WEBP"}.get(str(extra_format).upper())
         if not save_png and extra is None:
             print("[SaveImageMetadata] 警告：save_png 关 且 附带格式=不保存，本次不保存任何文件")
@@ -716,7 +814,7 @@ class SaveImageMetadata(io.ComfyNode):
                     if meta_pnginfo:
                         for key in meta_pnginfo:  # 与官方 SaveImage 同约定：可拖回恢复工作流
                             pnginfo.add_text(key, json.dumps(meta_pnginfo[key]))
-                img.save(os.path.join(full_output_folder, file), pnginfo=pnginfo, compress_level=4)
+                img.save(os.path.join(full_output_folder, file), pnginfo=pnginfo, compress_level=6)
 
             if extra == "JPEG":
                 file = base + ".jpg"
@@ -725,14 +823,14 @@ class SaveImageMetadata(io.ComfyNode):
                 if write_params:
                     exif[0x9286] = _user_comment_bytes(params)  # UserComment，CivitAI 读取点
                 jpg.save(os.path.join(full_output_folder, file), "JPEG",
-                         quality=int(quality), exif=exif)
+                         quality=q_val, exif=exif)
             elif extra == "WEBP":
                 file = base + ".webp"
                 exif = Image.Exif()
                 if write_params:
                     exif[0x9286] = _user_comment_bytes(params)
                 img.save(os.path.join(full_output_folder, file), "WEBP",
-                         quality=int(quality), exif=exif)
+                         quality=q_val, exif=exif)
 
             counter += 1  # 同一张图的两种格式共用编号，下一张图再递增
 

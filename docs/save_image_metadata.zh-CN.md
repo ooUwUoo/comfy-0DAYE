@@ -19,15 +19,16 @@
 | `embed_lora` | 是否包含 LoRA 信息（内联 `<lora:...>` 标签 + `Lora hashes:`） |
 | `embed_workflow` | 是否把工作流嵌入 PNG（默认**关**） |
 | `sanitize` | 保存前对密钥与路径用户名脱敏（默认开） |
-| `quality` | JPEG/WEBP 画质 |
+| `quality` | JPEG/WEBP 画质档位：`极高 (95)` / `高 (85)`（默认）/ `低 (78)` |
+| `quality_custom` | 手动画质数值（1–100）。>0 时优先于档位；`-1` = 跟随档位 |
 | `positive_node_id` / `negative_node_id` | `-1` = 自动。填节点 ID 则从该节点的文本控件抓提示词 |
 | `sampler_node_id` | `-1` = 自动。填节点 ID 则把该节点当采样器解析——seed/steps/cfg/采样器/调度器与模型、LoRA 全部从它派生 |
 | `seed_override` / `steps_override` | `-1` = 不覆盖。`seed` 为 ≥0 生效，`steps` 为 >0 生效 |
-| `model_override` | 主模型文件名（纯文本框、不可连线）。按该名字查文件算哈希 |
+| `model_node_id` | 模型/LoRA 兜底节点 ID（-1=自动沿采样器 model 链）。填 rgthree Power Lora Loader / Checkpoint 加载器等节点 ID，从该节点起扫模型与 LoRA |
 | `lora_override` | LoRA 列表，每行一项；支持「名称:权重」或 `<lora:名称:权重>`（省略权重记 1.0） |
 | `positive_text` / `negative_text` | optional 纯连线输入，直接提供提示词文本 |
 
-覆盖优先级：手动输入（上述各 override 与 `positive_text` / `negative_text`）> 节点 ID 兜底（`positive/negative/sampler_node_id`）> 自动追溯。
+覆盖优先级：手动输入（上述各 override 与 `positive_text` / `negative_text`）> 节点 ID 兜底（`positive/negative/sampler_node_id/model_node_id`）> 自动追溯。
 
 ## 输出
 
@@ -65,6 +66,7 @@
 ## 已知边界
 
 - LLM / 文本缓存等运行时生成文本静态追溯不到 → `positive_node_id` 填节点 ID，或 `positive_text` / `negative_text` 手动接线
-- 冷门封装导致采样参数 / 模型 / LoRA 追溯不到 → `sampler_node_id` 指定采样器解析，或直接用 `seed_override` / `steps_override` / `model_override` / `lora_override` 手动覆盖
+- 已适配的第三方 LoRA 加载器（在采样器 model 链上即可自动追溯，无需配置）：标准 `LoraLoader` / WAS `LoRA Loader`、rgthree `Power Lora Loader`、LoraManager `Lora Loader (LoraManager)` / `LoRA Text Loader`（含 LORA_STACK 堆栈透传）；其它冷门加载器用 `model_node_id` 指定，或 `lora_override` 手动填
+- 冷门封装导致采样参数 / 模型 / LoRA 追溯不到 → `sampler_node_id` 指定采样器解析、`model_node_id` 指定模型/LoRA 来源节点，或直接用 `seed_override` / `steps_override` / `lora_override` 手动覆盖
 - 多条独立采样流水线时取离本节点最近的采样器；`sampler_node_id` 可显式指定，绕过该推断
 - 模型哈希首次计算读完整模型文件（数秒），之后命中边车缓存

@@ -19,15 +19,16 @@ Saves a main PNG plus an optional sidecar JPEG/WEBP (at most two formats, **no p
 | `embed_lora` | Include LoRA info (inline `<lora:...>` tags + `Lora hashes:`) |
 | `embed_workflow` | Embed the workflow into the PNG (default **off**) |
 | `sanitize` | Redact secrets and path usernames before saving (default on) |
-| `quality` | JPEG/WEBP quality |
+| `quality` | JPEG/WEBP quality tier: `极高 (95)` / `高 (85)` (default) / `低 (78)` |
+| `quality_custom` | Manual quality value (1–100). Takes priority over the tier when > 0; `-1` = follow the tier |
 | `positive_node_id` / `negative_node_id` | `-1` = auto. Set a node ID to read the prompt from that node's text widget |
 | `sampler_node_id` | `-1` = auto. Set a node ID to treat that node as the sampler — seed/steps/cfg/sampler/scheduler and model/LoRA are all derived from it |
 | `seed_override` / `steps_override` | `-1` = keep the traced value. `seed` applies when ≥ 0, `steps` applies when > 0 |
-| `model_override` | Main model filename (widget only, not linkable). The hash is computed by looking up that file |
+| `model_node_id` | Model/LoRA fallback node ID (-1 = auto-trace via the sampler's model chain). Set it to a node like rgthree Power Lora Loader or a Checkpoint loader to scan models/LoRAs from that node onward |
 | `lora_override` | LoRA list, one per line; supports `name:weight` or `<lora:name:weight>` (weight defaults to 1.0) |
 | `positive_text` / `negative_text` | Optional socket-only inputs that supply the prompt text directly |
 
-Override priority: manual inputs (the overrides above plus `positive_text` / `negative_text`) > node-ID fallback (`positive/negative/sampler_node_id`) > automatic tracing.
+Override priority: manual inputs (the overrides above plus `positive_text` / `negative_text`) > node-ID fallback (`positive/negative/sampler_node_id/model_node_id`) > automatic tracing.
 
 ## Outputs
 
@@ -65,6 +66,7 @@ Fully static — reads the hidden prompt graph, never triggers execution.
 ## Known Limits
 
 - Runtime-generated text (LLM, Text Cache, …) cannot be traced statically → set `positive_node_id`, or wire `positive_text` / `negative_text`
-- Unusual wrappers may hide sampler settings / model / LoRA → set `sampler_node_id`, or use `seed_override` / `steps_override` / `model_override` / `lora_override`
+- Third-party LoRA loaders already supported (auto-traced while on the sampler's model chain, no config): standard `LoraLoader` / WAS `LoRA Loader`, rgthree `Power Lora Loader`, LoraManager `Lora Loader (LoraManager)` / `LoRA Text Loader` (incl. LORA_STACK passthrough); for other loaders use `model_node_id` or `lora_override`
+- Unusual wrappers may hide sampler settings / model / LoRA → set `sampler_node_id` (sampler) or `model_node_id` (model/LoRA source), or use `seed_override` / `steps_override` / `lora_override`
 - With several independent sampling pipelines the sampler nearest to this node is used; `sampler_node_id` overrides that inference
 - The first model-hash computation reads the whole model file (a few seconds); later runs hit the sidecar cache
