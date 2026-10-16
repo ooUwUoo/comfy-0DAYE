@@ -3,6 +3,8 @@ import { app } from "../../../scripts/app.js";
 // 预设数值直接编码在 profile 选项文本里（cf=/gs=），后端用同一格式解析，单一数据源。
 // 调整预设只需改 __init__.py 的 options 列表，本文件无需同步。
 const PRESET_RE = /\[cf=([\d.]+),\s*gs=(\d+)\]/;
+const DEFAULT_W = 331; // 新建节点默认宽（按用户工作流实测尺寸）
+const DEFAULT_H = 676; // 新建节点默认高（同上）
 
 app.registerExtension({
     name: "0DAYE.SplitInpaint.ProfileSync",
@@ -12,6 +14,10 @@ app.registerExtension({
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = onNodeCreated?.apply(this, arguments);
+
+            // 新建节点统一为实测默认尺寸 331×676；
+            // 加载工作流走 configure（size 随后被保存值覆盖），不受影响。
+            try { this.setSize([DEFAULT_W, DEFAULT_H]); } catch (_) {}
 
             const profileWidget = this.widgets?.find((w) => w.name === "profile");
             const cfWidget = this.widgets?.find((w) => w.name === "context_factor");

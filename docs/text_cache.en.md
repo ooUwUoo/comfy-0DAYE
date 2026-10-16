@@ -35,4 +35,4 @@ Outputs: `text` (result), `history_list` (numbered history with full text, `⏎`
 
 - To freeze the last good result: **mute (Ctrl+M) the upstream LLM group** — `自动` mode will keep outputting the previous text. **Bypass (Ctrl+B) does NOT trigger this**: bypass passes data through unprocessed, which is indistinguishable from live output, so use the explicit `历史` mode or fill `override_text` instead.
 - `回填` writes the selected entry into `override_text` and switches `mode` back to `自动`, so the filled text takes effect immediately.
-- UI: `text` is a socket-only port (no textbox); the `override_text` area stretches when you drag the node's bottom-right corner (native front-end behavior); the history panel has its own drag handle at its bottom edge (80–1000px).
+- UI: `text` is a socket-only port (no textbox); the history panel has its own drag handle at the bottom edge that **adjusts only the panel height (80–1000px)** without affecting the prompt box or other controls above; dragging the node's bottom-right corner only stretches the `override_text` area (native front-end behavior). Panel height persists with the workflow.

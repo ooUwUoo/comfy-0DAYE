@@ -1,17 +1,21 @@
 // 文本缓存节点历史面板 —— comfy_0DAYE
 // 节点体内「历史记录」区域：最近 50 条，每条 = 序号 + 截断文本 + 复制/回填双按钮；
 // 悬停弹出完整文本；执行完成后自动刷新；history_key=-1 时写入当前节点实例 id 实现自动隔离。
-// 面板为弹性布局：默认 160px，两种调高方式——
-//   ① 拖动节点右下角整体缩放（DOM widget 吸收节点多余高度，原生行为）；
-//   ② 拖动面板底部手柄单独调高面板（只改节点总高，不动其它控件）。
-// text / override_text 均走新前端原生渲染：text 为纯连线端口（force_input，无文本框）；
-// 文本区高度随节点拖拽右下角伸缩（原生行为，勿再覆写 widget.computeSize，否则新前端布局错乱）。
+// 面板高度由底部手柄单独调节（p.h，默认 160px，随工作流持久化在 node.properties.odPanelH）。
+// 关键机制（勿改坏）：新前端 _arrangeWidgets 会把节点多余高度在所有「有 computeLayoutSize 的 widget」
+// 之间等比均分。若面板与提示词框都是弹性 widget，拖手柄增高节点时两者会一起变长（输入框跟着被拉长）。
+// 因此面板必须声明「固定高度」（minHeight = maxHeight = p.h，remaining=0 不参与分配）：
+//   ① 拖手柄 → 面板 +delta、节点总高同步 +delta → 提示词框分配额不变，只有面板变高；
+//   ② 拖节点右下角 → 面板不动、多余高度全归提示词框（原生行为）。
+// text / override_text 均走新前端原生渲染：text 为纯连线端口（force_input，无文本框）。
 import { app } from "../../../scripts/app.js";
 
 const NODE_NAME = "TextCacheWithHistory";
 const PANEL_H = 160; // 默认面板高度（px）
 const PANEL_MIN = 80; // 面板最小高度（px，拖拽手柄/节点缩放的硬下限）
 const PANEL_MAX = 1000; // 面板最大高度（px，拖拽手柄上限）
+const DEFAULT_W = 314; // 新建节点默认宽（按用户工作流实测尺寸）
+const DEFAULT_H = 360; // 新建节点默认高（同上）
 const ROW_BRIEF_MAX = 120; // 行内展示的截断长度（字符）
 
 const STYLE_ID = "0daye-histpanel-style";
@@ -44,6 +48,29 @@ function ensureStyle() {
   document.head.appendChild(el);
 }
 
+// —— 面板高度状态：p.h（节点单位），持久化到 node.properties.odPanelH（随工作流保存）——
+function clampPanelH(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return PANEL_H;
+  return Math.max(PANEL_MIN, Math.min(PANEL_MAX, n));
+}
+function readStoredPanelH(node) {
+  return clampPanelH(node?.properties?.odPanelH);
+}
+function persistPanelH(node, h) {
+  try {
+    node.properties = node.properties || {};
+    node.properties.odPanelH = h;
+  } catch (_) {}
+}
+
+// 提示词框（override_text）是否为「弹性」widget（有 computeLayoutSize 且无 computeSize）。
+// 弹性 → 节点多余高度由它吸收，面板必须钉成固定高度；否则维持面板吸收的旧行为。
+function textWidgetIsFlexible(node) {
+  const tw = node.widgets?.find((w) => w.name === "override_text");
+  return !!(tw && !tw.computeSize && typeof tw.computeLayoutSize === "function");
+}
+
 // —— history_key=-1（自动）时写入当前节点实例编号 ——
 function autoAssignKey(node) {
   const kw = node.widgets?.find((w) => w.name === "history_key");
@@ -74,8 +101,8 @@ function makePanel() {
 }
 
 // —— 面板底部手柄：单独拖拽调整面板高度 ——
-// 原理：面板是节点内唯一弹性吸收高度的 DOM widget，拖手柄 = 按增量调节点总高。
-// 坐标换算：root.offsetHeight / clientY 是屏幕像素，node.size 是画布坐标，需除以画布缩放。
+// 做法：面板 +delta 的同时把节点总高 +delta → 提示词框分配额不变，只有面板变高。
+// 坐标换算：clientY 增量是屏幕像素，node.size / p.h 是画布（节点）单位，需除以画布缩放。
 function attachResizeGrip(node, p) {
   let dragging = false;
   let startY = 0;
@@ -85,17 +112,19 @@ function attachResizeGrip(node, p) {
     ev.stopPropagation();
     dragging = true;
     startY = ev.clientY;
-    startH = p.root.offsetHeight;
+    startH = p.h;
     try { p.grip.setPointerCapture(ev.pointerId); } catch (_) {}
   });
   p.grip.addEventListener("pointermove", (ev) => {
     if (!dragging) return;
     ev.stopPropagation();
-    const target = Math.max(PANEL_MIN, Math.min(PANEL_MAX, startH + (ev.clientY - startY)));
-    const delta = target - p.root.offsetHeight;
-    if (Math.abs(delta) < 1) return;
     const scale = app.canvas?.ds?.scale || 1;
-    node.setSize([node.size[0], node.size[1] + delta / scale]);
+    const want = clampPanelH(startH + (ev.clientY - startY) / scale);
+    const delta = want - p.h;
+    if (Math.abs(delta) < 0.5) return;
+    p.h = want;
+    persistPanelH(node, want);
+    node.setSize([node.size[0], node.size[1] + delta]); // 总高同步 +delta，上方控件不受影响
     node.setDirtyCanvas?.(true, true);
   });
   const end = () => { dragging = false; };
@@ -106,15 +135,20 @@ function attachResizeGrip(node, p) {
 function attachPanel(node) {
   if (node._odHp) return; // 已挂载过
   const p = makePanel();
+  node._odHp = p; // 状态与渲染共用同一对象（高度状态 p.h 必须与闭包引用一致）
+  p.h = readStoredPanelH(node);
   const widget = node.addDOMWidget("0daye_histpanel", "histpanel", p.root, {
     serialize: false,
     hideOnZoom: false,
     getMinHeight: () => PANEL_MIN,
   });
-  // 弹性保底取 PANEL_MIN：节点被拖高时多余高度由本 widget 吸收，也可缩到最小 80px
-  widget.computeLayoutSize = () => ({ minHeight: PANEL_MIN, minWidth: 1 });
+  // 面板声明「固定高度」p.h（min=max → 不参与多余高度均分）：
+  // 显示层若探测到提示词框非弹性（不会吸收高度），则退回旧的弹性吸收写法，避免节点底部留空白。
+  widget.computeLayoutSize = () =>
+    textWidgetIsFlexible(node)
+      ? { minHeight: p.h, maxHeight: p.h, minWidth: 1 }
+      : { minHeight: PANEL_MIN, minWidth: 1 };
   p.widget = widget;
-  node._odHp = { ...p, widget };
   attachResizeGrip(node, p);
 
   updatePanel(node, []);
@@ -288,17 +322,18 @@ app.registerExtension({
       const r = onNodeCreated?.apply(this, arguments);
       autoAssignKey(this);
       attachPanel(this);
-      // 新建节点默认面板 160px：保底是 80（PANEL_MIN），此处一次性补齐差值；
-      // 加载工作流走 configure（size 用保存值），不会经过这里。
-      try { this.setSize([this.size[0], this.size[1] + (PANEL_H - PANEL_MIN)]); } catch (_) {}
+      // 新建节点统一为实测默认尺寸 314×360；
+      // 加载工作流走 configure（size 随后被保存值覆盖），不受影响。
+      try { this.setSize([DEFAULT_W, DEFAULT_H]); } catch (_) {}
       return r;
     };
 
-    // 加载工作流时 configure 直接赋值、不触发 onNodeCreated 的回调逻辑，需补一次 key 分配
+    // 加载工作流时 configure 直接赋值、不触发 onNodeCreated 的回调逻辑，需补一次 key 分配与面板高度
     const origConfigure = nodeType.prototype.configure;
     nodeType.prototype.configure = function () {
       const rc = origConfigure?.apply(this, arguments);
       autoAssignKey(this);
+      if (this._odHp) this._odHp.h = readStoredPanelH(this); // 恢复持久化的面板高度
       return rc;
     };
   },

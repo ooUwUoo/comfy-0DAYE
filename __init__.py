@@ -12,6 +12,7 @@ import nodes
 from comfy_api.latest import ComfyExtension, io
 
 from .text_cache import TextCacheWithHistory
+from .save_image_metadata import SaveImageMetadata
 
 
 # 支持 reference_latents（in-context 参考图）编辑机制的模型类名 → 该模型所需的 reference_latents_method。
@@ -506,7 +507,7 @@ WEB_DIRECTORY = "./web"
 
 class SplitInpaintExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [SplitInpaint, TextCacheWithHistory]
+        return [SplitInpaint, TextCacheWithHistory, SaveImageMetadata]
 
 
 async def comfy_entrypoint() -> SplitInpaintExtension:
@@ -517,8 +518,10 @@ async def comfy_entrypoint() -> SplitInpaintExtension:
 NODE_CLASS_MAPPINGS = {
     "SplitInpaint": SplitInpaint,
     "TextCacheWithHistory": TextCacheWithHistory,
+    "SaveImageMetadata": SaveImageMetadata,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SplitInpaint": "蒙版分块重绘",
     "TextCacheWithHistory": "文本缓存",
+    "SaveImageMetadata": "元数据存图 (Save Image Metadata)",
 }
