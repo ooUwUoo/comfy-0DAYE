@@ -14,9 +14,15 @@ ComfyUI custom nodes. Category: `0DAYE`
 
 All detailed node docs: [docs/README.md](docs/README.md)
 
+## Compatibility
+
+- Nodes are defined with the official V3 DSL (`io.ComfyNode`); the backend auto-generates V1-compatible metadata, so both canvas renderers — classic **LiteGraph** and **Nodes 2.0 (Vue)** — load every node, and workflow JSON is interchangeable between them.
+- Frontend extensions (`web/*.js`) run on both renderers; display-layer panels (history panel, prefix helper) degrade gracefully without affecting execution.
+- Minimum verified environment: **ComfyUI 0.41.0+ with frontend package 1.55+** (includes the Nodes 2.0 toggle). Older ComfyUI versions that cannot parse V3 nodes are not supported — upgrade instead of expecting a silent fallback.
+
 ## Installation
 
 - ComfyUI Manager: install via git URL `https://github.com/ooUwUoo/comfy-0DAYE.git`
 - Manual: `cd ComfyUI/custom_nodes && git clone https://github.com/ooUwUoo/comfy-0DAYE.git`, then restart ComfyUI.
 
-Requirements: ComfyUI 0.39+, opencv-python, PyTorch.
+Requirements: ComfyUI 0.41.0+ (frontend package 1.55+), opencv-python, PyTorch.

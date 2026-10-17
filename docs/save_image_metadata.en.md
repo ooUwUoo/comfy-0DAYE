@@ -31,6 +31,8 @@ Saves a main PNG plus an optional sidecar JPEG/WEBP (at most two formats, **no p
 
 Override priority: manual inputs (the overrides above plus `positive_text` / `negative_text`) > node-ID fallback (`positive/negative/sampler_node_id/model_node_id/lora_node_id`) > automatic tracing.
 
+**Advanced options folding**: 13 inputs — `quality`, `sanitize`, `embed_parameters`, `embed_lora`, `embed_workflow`, `save_workflow_json`, `seed_override`, `steps_override`, `lora_override`, `positive_node_id`, `negative_node_id`, `sampler_node_id`, `model_node_id` — are collapsed by default behind the "Show advanced inputs" button at the bottom of the node (Nodes 2.0 canvas only; the legacy LiteGraph canvas shows everything flat, unaffected). `filename_prefix`, `save_png`, `extra_format`, `mode` and `lora_node_id` stay visible.
+
 ## Outputs
 
 `images` (passthrough) and `parameters` (the A1111 parameter string actually written). No `ui` payload is returned, so the node has **no preview window**.

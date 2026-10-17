@@ -1,14 +1,17 @@
 import { app } from "../../../scripts/app.js";
+import { collapseFit, installCollapseFit, onEngineSwitch } from "./od_engine.js";
 
 // SaveImageMetadata（元数据存图）前端扩展 —— 纯显示层。
 // 节点多语言显示名由 ComfyUI 官方 i18n 机制（locales/<lang>/nodeDefs.json）接管，本文件不再处理标题。
-// 这里只做三件事（后端仍是唯一真源，JS 失效不影响执行）：
+// 这里只做四件事（后端仍是唯一真源，JS 失效不影响执行）：
 // ① 新建节点统一为实测默认宽度（仅宽度；高度沿用 ComfyUI 计算值 + 前缀助手面板占位）。
 // ② mode=原生 ComfyUI 时灰化三个 CivitAI 嵌入开关（embed_parameters/embed_lora/embed_workflow），
 //    提示用户这些开关在原生模式下不生效；后端 write_params/write_workflow 的短路逻辑不变。
 // ③ filename_prefix「前缀助手」面板：下拉选「最近使用(5)/我的模板」一键写入 + 占位符 chips 追加；
 //    数据经 GET/POST /comfy_0DAYE/save_image/prefix_state 持久化到服务端 user/0DAYE/（插件更新不丢），
 //    路由不可用时降级为内存态（面板照常可用，只是不持久）。所有操作最终都是写原 widget 值。
+// ④ advanced 折叠兜底：后端 13 个控件声明 advanced=True，但新前端 V1→V2 转换层可能丢标记
+//    （TextCache 同构 config 实测中招），节点创建/加载后补写 _visibility.surfaces（见 ADV_WIDGETS）。
 const DEFAULT_W = 295;
 
 // 原生模式下被夺权的开关（参数串/LoRA 强制不写、工作流强制嵌，与后端短路一致）
@@ -25,6 +28,33 @@ const PLACEHOLDER_CHIPS = [
     "%seed%", "%steps%", "%cfg%", "%sampler%", "%scheduler%", "%denoise%",
     "%model%", "%width%", "%height%", "%prompt%", "%date:yyyy-MM-dd%", "%batch_num%",
 ];
+
+// —— ④ advanced 折叠兜底（与 history_panel.js 同款机制，实测踩坑勿删）——
+// 后端 save_image_metadata.py 已给 13 个控件声明 advanced=True（用户逐项确认），
+// 但新前端（1.55.x）V1→V2 转换层可能丢失该标记（TextCache 同构 config 实测中招）。
+// 补写 options.advanced + _visibility.surfaces（可见性判定消费的即时状态，仅改 options 不重算）。
+// surfaces 三面消费方不同（bundle 实挖）：canvas=旧版画布命中测试必须保持 'shown'（否则旧版
+// 画得出但点不动）；vueNode/panel=Vue 折叠 → 'advanced'。
+// 与后端 advanced=True 清单保持一致（单一数据源仍以后端为准，JS 是显示层兜底）。
+const ADV_WIDGETS = [
+    "quality", "sanitize",
+    "embed_parameters", "embed_lora", "embed_workflow", "save_workflow_json",
+    "seed_override", "steps_override", "lora_override",
+    "positive_node_id", "negative_node_id", "sampler_node_id", "model_node_id",
+];
+function applyAdvancedFallback(node) {
+    for (const name of ADV_WIDGETS) {
+        const w = findWidget(node, name);
+        if (!w) continue;
+        if (w.options) w.options.advanced = true;
+        const vis = w._visibility ?? w.visibility;
+        if (vis?.surfaces) {
+            vis.surfaces.canvas = "shown";
+            vis.surfaces.vueNode = "advanced";
+            vis.surfaces.panel = "advanced";
+        }
+    }
+}
 
 function findWidget(node, name) {
     return node?.widgets?.find((w) => w?.name === name);
@@ -285,6 +315,16 @@ app.registerExtension({
 
     // 记录「最近使用」：节点每次实际执行后读其 filename_prefix 当前值入历史
     setup() {
+        // 引擎现场切换（不刷新页面）：切到 Vue → 本类折叠态节点统一收缩；切回旧版 → 撑回全高
+        onEngineSwitch((vue) => {
+            for (const n of app.graph?._nodes ?? []) {
+                if (n?.comfyClass !== "SaveImageMetadata" && n?.type !== "SaveImageMetadata") continue;
+                try {
+                    if (vue) collapseFit(n);
+                    else n.expandToFitContent?.();
+                } catch (_) {}
+            }
+        });
         app.api.addEventListener("executed", (e) => {
             try {
                 const id = e.detail?.node ?? e.detail?.display_node;
@@ -307,12 +347,20 @@ app.registerExtension({
                 applyModeState(this);
                 attachPrefixHelper(this);
                 ensurePanelSpace(this);
+                applyAdvancedFallback(this); // advanced 折叠兜底（幂等）
+                // 折叠态高度自适应（仅 Nodes 2.0）：折叠只是渲染层过滤、size 不会自动收缩，
+                // 新建即收缩到折叠态实际高度；工作流加载走 configure 不动保存尺寸。
+                installCollapseFit(this);
+                collapseFit(this);
                 // 新建节点统一宽度 DEFAULT_W：新前端在 onNodeCreated 时 size 尚未计算（为 [0,0]），
                 // 需延迟到下一帧 setSize，否则 setSize 被跳过、宽度停留在默认 400。
                 setTimeout(() => {
                     if (this._odConfigured) return;  // 工作流加载的节点保留保存尺寸
                     const h = Array.isArray(this.size) && this.size[1] ? this.size[1] : this.computeSize?.()?.[1];
                     if (h) this.setSize([DEFAULT_W, h]);
+                    // 二次收缩（双保险）：同步阶段 node.size 还是 [0,0]、computeSize 时机不稳，
+                    // 若同步 collapseFit 未生效，上面 h 会取到全展开高 → 这里在宽度落定后再收一次
+                    collapseFit(this);
                 }, 0);
                 // 新建节点自动填入最近使用第一条：仅当值仍是后端默认值、且不是工作流加载/粘贴
                 // （加载/粘贴会先走 configure，_odConfigured 置位，保存值优先）
@@ -337,8 +385,22 @@ app.registerExtension({
                 applyModeState(this);
                 attachPrefixHelper(this);
                 ensurePanelSpace(this);
+                applyAdvancedFallback(this); // advanced 折叠兜底（幂等）
+                installCollapseFit(this); // 只装访问器不收缩：加载节点尊重保存尺寸，后续手动折叠才收缩
             } catch (_) {}
             return r;
+        };
+
+        // onAdded：graph.add 分配真实 id 后触发；顺带重刷 advanced 兜底 + 装折叠访问器（均幂等，
+        // 兼兜引擎现场切换伴随的节点重建——引擎切换不刷新页面，见 history_panel.js 踩坑记录）
+        const onAdded = nodeType.prototype.onAdded;
+        nodeType.prototype.onAdded = function () {
+            const ra = onAdded?.apply(this, arguments);
+            try {
+                applyAdvancedFallback(this);
+                installCollapseFit(this);
+            } catch (_) {}
+            return ra;
         };
     },
 });

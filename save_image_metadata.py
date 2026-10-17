@@ -890,6 +890,7 @@ class SaveImageMetadata(io.ComfyNode):
                 ),
                 io.Int.Input(
                     "quality", default=85, min=1, max=100,
+                    advanced=True,
                     tooltip="JPEG/WEBP 画质（1–100，PNG 无损不受影响）：超高质量 95、高质量 85、一般质量 78，也可输入任意数值",
                 ),
                 io.Combo.Input(
@@ -900,46 +901,57 @@ class SaveImageMetadata(io.ComfyNode):
                 ),
                 io.Boolean.Input(
                     "embed_parameters", default=True, label_on="嵌入", label_off="不嵌",
+                    advanced=True,
                     tooltip="内嵌 CivitAI/A1111 生成参数串（PNG 的 parameters 块 / JPEG·WEBP 的 EXIF UserComment）；原生模式下无效",
                 ),
                 io.Boolean.Input(
                     "embed_lora", default=True, label_on="嵌入", label_off="不嵌",
+                    advanced=True,
                     tooltip="参数串中附带 LoRA 信息（<lora:名:权重> 内联标签 + Lora hashes 字段）；原生模式下无效",
                 ),
                 io.Boolean.Input(
                     "embed_workflow", default=False, label_on="嵌入", label_off="不嵌",
+                    advanced=True,
                     tooltip="PNG 额外内嵌 ComfyUI 工作流 JSON（可拖回恢复，文件明显变大，默认关）；仅对 PNG 生效；原生模式下强制嵌入",
                 ),
                 io.Boolean.Input(
                     "save_workflow_json", default=False, label_on="保存", label_off="不存",
+                    advanced=True,
                     tooltip="额外保存一份独立的工作流 JSON 文件（与图片同名，.json 扩展名，UI 格式可拖回恢复）；默认关",
                 ),
                 io.Boolean.Input(
                     "sanitize", default=True, label_on="脱敏", label_off="不脱敏",
+                    advanced=True,
                     tooltip="保存前脱敏：API key/token/密码等敏感控件值与常见令牌格式打码为 [REDACTED]，防止随元数据外泄",
                 ),
                 io.Int.Input(
                     "positive_node_id", default=-1, min=-1, max=999999,
+                    advanced=True,
                     tooltip="兜底正面提示词抓取：-1=自动追溯；填节点 ID 则直接从该节点的文本控件抓取（抓取为空时回落自动结果）。优先级低于 positive_text 接线",
                 ),
                 io.Int.Input(
                     "negative_node_id", default=-1, min=-1, max=999999,
+                    advanced=True,
                     tooltip="兜底负面提示词抓取：-1=自动追溯；填节点 ID 则直接从该节点的文本控件抓取（抓取为空时回落自动结果）。优先级低于 negative_text 接线",
                 ),
                 io.Int.Input(
                     "sampler_node_id", default=-1, min=-1, max=999999,
+                    advanced=True,
                     tooltip="兜底采样参数抓取：-1=自动追溯；填节点 ID 则把该节点当采样器解析——seed/steps/cfg/采样器/调度器与模型、LoRA 全部从它派生（解析不到时回落自动结果）",
                 ),
                 io.Int.Input(
                     "seed_override", default=-1, min=-1, max=(1 << 63) - 1,
+                    advanced=True,
                     tooltip="手动指定 seed（-1=不覆盖）。优先级最高，覆盖自动追溯与 sampler_node_id 的结果",
                 ),
                 io.Int.Input(
                     "steps_override", default=-1, min=-1, max=1000000,
+                    advanced=True,
                     tooltip="手动指定步数（-1=不覆盖）。优先级最高",
                 ),
                 io.Int.Input(
                     "model_node_id", default=-1, min=-1, max=999999999,
+                    advanced=True,
                     tooltip="模型/LoRA 兜底：-1=沿采样器 model 链自动追溯；填节点 ID（如 rgthree Power Lora Loader、Checkpoint 加载器）则从该节点起扫模型与 LoRA 并沿其 model 链上溯。优先级低于 lora_override",
                 ),
                 io.Int.Input(
@@ -948,6 +960,7 @@ class SaveImageMetadata(io.ComfyNode):
                 ),
                 io.String.Input(
                     "lora_override", default="", multiline=True, socketless=True,
+                    advanced=True,
                     tooltip="手动指定 LoRA 列表（留空=不覆盖）。每行一项，支持「名称:权重」或「<lora:名称:权重>」，省略权重记 1.0。优先级最高",
                 ),
                 io.String.Input(

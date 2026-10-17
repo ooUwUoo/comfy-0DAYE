@@ -14,9 +14,15 @@ ComfyUI 自定义节点插件。分类：`0DAYE`
 
 全部节点详细说明：[docs/README.zh-CN.md](docs/README.zh-CN.md)
 
+## 兼容性
+
+- 节点基于官方 V3 DSL（`io.ComfyNode`）定义，后端自动生成 V1 兼容元数据：旧版 **LiteGraph** 画布与新版 **Nodes 2.0（Vue）** 画布均可正常加载全部节点，工作流 JSON 双向互通。
+- 前端扩展（`web/*.js`）在两种渲染引擎下均可运行；历史面板、前缀助手等显示层功能异常时静默降级，不影响执行。
+- 最低已验证环境：**ComfyUI 0.41.0+（前端包 1.55+，含 Nodes 2.0 开关）**。低于该版本、无法识别 V3 节点的 ComfyUI 不受支持，请升级，不要指望静默降级。
+
 ## 安装
 
 - ComfyUI Manager：用 git 地址安装 `https://github.com/ooUwUoo/comfy-0DAYE.git`
 - 手动：`cd ComfyUI/custom_nodes && git clone https://github.com/ooUwUoo/comfy-0DAYE.git`，然后重启 ComfyUI。
 
-依赖：ComfyUI 0.39+、opencv-python、PyTorch。
+依赖：ComfyUI 0.41.0+（前端包 1.55+）、opencv-python、PyTorch。

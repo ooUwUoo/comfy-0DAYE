@@ -227,6 +227,7 @@ class TextCacheWithHistory(io.ComfyNode):
                     multiline=True,
                     default="",
                     socketless=True,
+                    advanced=True,
                     tooltip=(
                         "触发词前缀（手动，逗号或换行分隔多个）：始终拼在最终输出段首，与模式无关；"
                         "可随时增删改，冻结 override_text 后改这里也立即生效（面板「清空上框」一键清空）"
@@ -243,6 +244,7 @@ class TextCacheWithHistory(io.ComfyNode):
                     "mode",
                     options=["自动", "上游", "历史"],
                     default="自动",
+                    advanced=True,
                     tooltip="自动：override_text 非空→输出它；否则上游 text 非空→直通；否则（上游被静音/未接）→输出历史[history_index]。上游：无条件输出上游。历史：无条件输出历史",
                 ),
                 io.Int.Input(
@@ -250,6 +252,7 @@ class TextCacheWithHistory(io.ComfyNode):
                     default=-1,
                     min=-1,
                     max=999999,
+                    advanced=True,
                     tooltip="-1=自动：前端在节点创建时写入当前节点实例编号，每个节点历史互相独立；填相同数字则共享同一份历史",
                 ),
                 io.Int.Input(
@@ -257,6 +260,7 @@ class TextCacheWithHistory(io.ComfyNode):
                     default=0,
                     min=0,
                     max=HISTORY_MAX - 1,
+                    advanced=True,
                     tooltip="历史模式下输出第几条历史：0=最近一条，1=前一条……（最多保留 50 条）",
                 ),
             ],

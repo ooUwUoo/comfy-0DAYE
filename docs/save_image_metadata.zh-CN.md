@@ -31,6 +31,8 @@
 
 覆盖优先级：手动输入（上述各 override 与 `positive_text` / `negative_text`）> 节点 ID 兜底（`positive/negative/sampler_node_id/model_node_id/lora_node_id`）> 自动追溯。
 
+**高级选项折叠**：`quality`、`sanitize`、`embed_parameters`、`embed_lora`、`embed_workflow`、`save_workflow_json`、`seed_override`、`steps_override`、`lora_override`、`positive_node_id`、`negative_node_id`、`sampler_node_id`、`model_node_id` 共 13 项默认折叠在节点底部「显示高级输入」里（仅 Nodes 2.0 新版画布；旧版 LiteGraph 画布全平铺不受影响）。`filename_prefix`、`save_png`、`extra_format`、`mode`、`lora_node_id` 常显。
+
 ## 输出
 
 `images`（透传）与 `parameters`（实际写入的 A1111 参数串）。**不返回 `ui` 数据 → 节点无预览图片窗口**。
