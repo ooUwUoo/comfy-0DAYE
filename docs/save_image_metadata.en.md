@@ -19,8 +19,7 @@ Saves a main PNG plus an optional sidecar JPEG/WEBP (at most two formats, **no p
 | `embed_lora` | Include LoRA info (inline `<lora:...>` tags + `Lora hashes:`) |
 | `embed_workflow` | Embed the workflow into the PNG (default **off**) |
 | `sanitize` | Redact secrets and path usernames before saving (default on) |
-| `quality` | JPEG/WEBP quality tier: `极高 (95)` / `高 (85)` (default) / `低 (78)` |
-| `quality_custom` | Manual quality value (1–100). Takes priority over the tier when > 0; `-1` = follow the tier |
+| `quality` | JPEG/WEBP quality: an editable dropdown — presets `95` / `85` (default) / `78`, or type any value in 1–100 |
 | `positive_node_id` / `negative_node_id` | `-1` = auto. Set a node ID to read the prompt from that node's text widget |
 | `sampler_node_id` | `-1` = auto. Set a node ID to treat that node as the sampler — seed/steps/cfg/sampler/scheduler and model/LoRA are all derived from it |
 | `seed_override` / `steps_override` | `-1` = keep the traced value. `seed` applies when ≥ 0, `steps` applies when > 0 |
@@ -63,10 +62,17 @@ Fully static — reads the hidden prompt graph, never triggers execution.
 - PNG: `tEXt parameters` (when `embed_parameters` is on); when `embed_workflow` is on or in native mode, `prompt` + each `extra_pnginfo` key are embedded per the official SaveImage convention (draggable back into ComfyUI to restore the workflow)
 - JPEG/WEBP: EXIF UserComment (0x9286), encoded like piexif/A1111 (ASCII prefix or UNICODE prefix + UTF-16 with BOM); the ~64KB EXIF segment limit means the workflow is not embedded. Both formats of the same image share one counter.
 
+## Prefix Helper (front-end panel below `filename_prefix`)
+
+- **One-click dropdown**: "最近使用" (recent, 5 entries recorded automatically after each actual run) + "我的模板" (my templates — click 「存」 to store the current prefix as a template; select a template and click 「删」 to remove it).
+- **Placeholder chips**: click to append any of the 12 placeholders (`%seed%` etc.) to the end of the prefix — no need to memorize the rules.
+- **New nodes auto-fill** the most recently used prefix (falls back to `ComfyUI_Meta` when there is no history); loading a workflow always keeps its saved value.
+- Persisted to `ComfyUI/user/0DAYE/save_image_metadata_prefix.json` (survives plugin updates/reinstalls); if the backend route is unavailable the panel degrades to in-memory state and saving itself is unaffected.
+
 ## Known Limits
 
 - Runtime-generated text (LLM, …) cannot be traced statically → set `positive_node_id`, or wire `positive_text` / `negative_text`. **Exception: the Text Cache node** — its latest runtime-history entry is read automatically (the cache runs upstream of the sampler, so the same pass already has this round's final text including the `prefix` / `trigger_text` trigger words; no second run needed); the static `override_text` is used only as a fallback when the cache did not execute in this pass
-- Third-party LoRA loaders already supported (auto-traced while on the sampler's model chain, no config): standard `LoraLoader` / WAS `LoRA Loader`, rgthree `Power Lora Loader`, LoraManager `Lora Loader (LoraManager)` / `LoRA Text Loader` (incl. LORA_STACK passthrough); for other loaders use `model_node_id` or `lora_override`
+- Third-party LoRA loaders already supported (auto-traced, no config): standard `LoraLoader` / WAS `LoRA Loader`, rgthree `Power Lora Loader`, LoraManager `Lora Loader (LoraManager)` / `LoRA Text Loader` / `Lora Randomizer` / `Lora Stacker` (incl. LORA_STACK passthrough and `lora_stack` link following) — on the sampler's model chain or via LORA_STACK side links; easy-use `easy loraStack` / `easy loraSwitcher` (followed via the `optional_lora_stack` link from `easy loraStackApply` / `easy fullLoader`; stacks can be chained, upstream applies first, `toggle` off disables that level; the switcher captures only the `select`-ed slot), and the LoRA axis of easy `xyPlot` (`XY inputs: Lora` node followed via `x_values` / `y_values` links); LoraManager `Lora Cycler` / `Lora Pool` pick entries at runtime (random/cycled) with no static list — fill `lora_override` manually; for other loaders use `model_node_id` or `lora_override`
 - Unusual wrappers may hide sampler settings / model / LoRA → set `sampler_node_id` (sampler) or `model_node_id` (model/LoRA source), or use `seed_override` / `steps_override` / `lora_override`
 - With several independent sampling pipelines the sampler nearest to this node is used; `sampler_node_id` overrides that inference
 - The first model-hash computation reads the whole model file (a few seconds); later runs hit the sidecar cache

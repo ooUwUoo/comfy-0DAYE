@@ -91,16 +91,25 @@ function makePanel() {
   header.className = "od-hp-header";
   const title = document.createElement("span");
   title.className = "od-hp-title";
-  title.textContent = "历史记录（最多50条，悬停看全文）";
-  // 「清空覆盖」：纯显示层便利按钮，等价于手动 Ctrl+A→Delete；
-  // 只把 override_text widget 置空，不碰后端执行逻辑（JS 失效时手动清空仍可用）
-  const clearBtn = document.createElement("button");
-  clearBtn.type = "button";
-  clearBtn.className = "od-hp-clear";
-  clearBtn.textContent = "清空覆盖";
-  clearBtn.title = "一键清空 override_text（恢复 text 直通 / 静音走历史）";
+  title.textContent = "历史记录";
+  // 标题栏三个清空按钮（名称按节点上文本框的实际位置：上框=prefix、下框=override_text）：
+  // 清空上/下框 = 纯显示层便利按钮，等价手动 Ctrl+A→Delete，只写 widget 值、不碰后端执行逻辑；
+  // 清空历史 = 调后端 API 清当前节点抽屉（内存+持久化文件同步）。
+  const mkClear = (label, tip) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "od-hp-clear";
+    b.textContent = label;
+    b.title = tip;
+    return b;
+  };
+  const clearTopBtn = mkClear("清空上框", "一键清空 prefix 触发词前缀框");
+  const clearBottomBtn = mkClear("清空下框", "一键清空 override_text（恢复 text 直通 / 静音走历史）");
+  const clearHistBtn = mkClear("清空历史", "清空本节点的历史记录（含持久化文件，不可恢复）");
   header.appendChild(title);
-  header.appendChild(clearBtn);
+  header.appendChild(clearTopBtn);
+  header.appendChild(clearBottomBtn);
+  header.appendChild(clearHistBtn);
   const list = document.createElement("div");
   list.className = "od-hp-list";
   const grip = document.createElement("div");
@@ -113,7 +122,7 @@ function makePanel() {
   tip.className = "od-hp-tip";
   tip.style.display = "none";
   document.body.appendChild(tip);
-  return { root, list, grip, tip, clearBtn };
+  return { root, list, grip, tip, clearTopBtn, clearBottomBtn, clearHistBtn };
 }
 
 // —— 面板底部手柄：单独拖拽调整面板高度 ——
@@ -166,12 +175,21 @@ function attachPanel(node) {
       : { minHeight: PANEL_MIN, minWidth: 1 };
   p.widget = widget;
   attachResizeGrip(node, p);
-  p.clearBtn.addEventListener("click", (ev) => {
+  p.clearTopBtn.addEventListener("click", (ev) => {
     ev.stopPropagation();
-    clearOverride(node, p.clearBtn);
+    clearBox(node, p.clearTopBtn, "prefix");
+  });
+  p.clearBottomBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    clearBox(node, p.clearBottomBtn, "override_text");
+  });
+  p.clearHistBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    clearHistory(node, p.clearHistBtn);
   });
 
   updatePanel(node, []);
+  refreshHistory(node); // 持久化历史：新建/加载后直接恢复显示（无需先执行一次）
 }
 
 // —— 渲染 ——
@@ -182,7 +200,7 @@ function updatePanel(node, entries) {
   if (!entries.length) {
     const e = document.createElement("div");
     e.className = "od-hp-empty";
-    e.textContent = "（暂无历史：运行一次后自动显示最近 50 条）";
+    e.textContent = "（暂无历史：运行一次后自动显示；最多 50 条，悬停看全文）";
     p.list.appendChild(e);
     return;
   }
@@ -282,23 +300,57 @@ function fillManual(node, txt, btn) {
   flash(btn, "已回填");
 }
 
-// 一键清空 override_text：与手动 Ctrl+A→Delete 结果完全相同（仅写 widget 值，不碰执行逻辑）。
-// 若该 widget 已被拖成连线端口且接了线，运行值来自连线、清空文本框无意义，提示用户删线。
-function clearOverride(node, btn) {
-  const linked = node.inputs?.some((i) => i.name === "override_text" && i.link != null);
+// 一键清空指定多行文本框（prefix / override_text）：与手动 Ctrl+A→Delete 结果完全相同
+//（仅写 widget 值，不碰执行逻辑）。若该 widget 已被拖成连线端口且接了线，
+// 运行值来自连线、清空文本框无意义，提示用户删线。
+function clearBox(node, btn, widgetName) {
+  const linked = node.inputs?.some((i) => i.name === widgetName && i.link != null);
   if (linked) {
     flash(btn, "请先删线");
     return;
   }
-  const mw = node.widgets?.find((w) => w.name === "override_text");
-  if (mw) {
-    mw.value = "";
-    if (typeof mw.callback === "function") {
-      try { mw.callback(""); } catch (_) {}
+  const w = node.widgets?.find((x) => x.name === widgetName);
+  if (w) {
+    w.value = "";
+    if (typeof w.callback === "function") {
+      try { w.callback(""); } catch (_) {}
     }
   }
   try { node.setDirtyCanvas(true, true); } catch (_) {}
   flash(btn, "已清空");
+}
+
+// 清空历史：调后端 API 清当前节点抽屉（内存 + 持久化文件同步），成功后清空面板显示。
+// 后端 execute 是类方法拿不到实例，清空只能走 HTTP 路由；JS 失败时历史仍在、不影响执行。
+async function clearHistory(node, btn) {
+  const kw = node.widgets?.find((w) => w.name === "history_key");
+  const key = kw ? Number(kw.value) : -1;
+  if (!window.confirm(`确定清空本节点的历史记录吗？（history_key=${key}，不可恢复）`)) return;
+  try {
+    const r = await app.api.fetchApi("/comfy_0DAYE/text_cache/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    if (!r.ok) throw new Error(String(r.status));
+    updatePanel(node, []);
+    flash(btn, "已清空");
+  } catch (_) {
+    flash(btn, "清空失败");
+  }
+}
+
+// 拉取本节点抽屉的持久化历史并刷新面板：重启/加载工作流后无需执行即可恢复显示。
+// 失败静默（后端旧版本无此路由时退回空面板，执行后由 executed 事件正常刷新）。
+async function refreshHistory(node) {
+  const kw = node.widgets?.find((w) => w.name === "history_key");
+  const key = kw ? Number(kw.value) : -1;
+  try {
+    const r = await app.api.fetchApi(`/comfy_0DAYE/text_cache/list?key=${encodeURIComponent(key)}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (typeof d?.history_list === "string") updatePanel(node, parseList(d.history_list));
+  } catch (_) {}
 }
 
 // —— 悬浮弹层 ——
@@ -373,6 +425,7 @@ app.registerExtension({
       const rc = origConfigure?.apply(this, arguments);
       autoAssignKey(this);
       if (this._odHp) this._odHp.h = readStoredPanelH(this); // 恢复持久化的面板高度
+      refreshHistory(this); // configure 后 widget 值（含 history_key）已就位，再拉一次历史
       return rc;
     };
   },

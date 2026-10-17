@@ -19,7 +19,7 @@
 
 text 为纯连线输入端口（force_input：绿色圆点、无文本框，optional → 位于其它控件下方），
 接上游直通；手动输入/覆盖请用 override_text 文本框（socketless）：「回填」按钮写入它并切
-mode=自动，清空它即可恢复直通（面板标题栏另有「清空覆盖」按钮一键清空）。
+mode=自动，清空它即可恢复直通（面板标题栏「清空下框」按钮一键清空）。
 
 触发词前缀（v4 新增，三种模式外层统一生效，输出恒为「前缀 + 主体」，前缀固定段首）：
   - prefix：socketless 多行文本框，手动触发词，逗号/换行分隔，可随时增删改，随工作流保存；
@@ -34,17 +34,89 @@ mode=自动，清空它即可恢复直通（面板标题栏另有「清空覆盖
     节点实例编号写入该 widget，使每个节点实例各自独立一份历史；填入具体数字则
     手动分组，相同数字共享同一份历史（API/CLI 直调未经过前端时 -1 兜底归 0 号）。
   - 每抽屉最多 HISTORY_MAX（50）条，去重（与最新一条相同则不重复入列）。
-  - 只存在进程内存（模块级），重启 ComfyUI 即清空。
+  - 持久化到 ComfyUI/user/0DAYE/text_cache_history.json（新增条目/清空时原子写盘），重启自动恢复；
+    面板标题栏「清空历史」按钮经 API 路由清当前节点抽屉（内存+磁盘同步）。
 """
 
+import json
+import os
 import re
 
+import folder_paths
 from comfy_api.latest import io
 
 HISTORY_MAX = 50
 
-# 模块级内存历史缓存：key -> {"texts": [...]}；重启 ComfyUI 进程即清空
-_HISTORY = {}
+# 用户私有数据目录：ComfyUI/user/0DAYE/（插件更新/重装不丢，也不入 git）
+USER_DATA_DIR = os.path.join(folder_paths.base_path, "user", "0DAYE")
+# 历史持久化文件：{history_key: [最新在前]}，仅新增条目/清空时写盘
+_HISTORY_FILE = os.path.join(USER_DATA_DIR, "text_cache_history.json")
+
+
+def _load_history():
+    """启动时从磁盘恢复历史；文件缺失/损坏一律按空历史兜底（不影响节点运行）。"""
+    try:
+        with open(_HISTORY_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return {}
+    out = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                key = int(k)
+            except (TypeError, ValueError):
+                continue
+            texts = v.get("texts") if isinstance(v, dict) else v
+            if isinstance(texts, list):
+                texts = [t for t in texts if isinstance(t, str) and t][:HISTORY_MAX]
+                if texts:
+                    out[key] = {"texts": texts}
+    return out
+
+
+# 模块级历史缓存：key -> {"texts": [...]}；启动时从 _HISTORY_FILE 恢复，写操作落盘持久化
+_HISTORY = _load_history()
+
+
+def _save_history():
+    """原子写盘（先 tmp 后替换，防写一半损坏）；只存非空抽屉。写失败仅告警，不影响执行。"""
+    data = {str(k): v["texts"] for k, v in _HISTORY.items() if v.get("texts")}
+    try:
+        os.makedirs(USER_DATA_DIR, exist_ok=True)
+        tmp = _HISTORY_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, _HISTORY_FILE)
+    except Exception as e:
+        print(f"[TextCache] 警告：历史写盘失败：{e}")
+
+
+def history_preview(key):
+    """只读查询：某抽屉历史清单（_preview 同款行格式），供前端面板在重启/加载工作流后恢复显示。
+    无抽屉或空历史返回 ""（前端显示「暂无历史」）。"""
+    try:
+        key = int(key)
+    except (TypeError, ValueError):
+        key = 0
+    if key < 0:
+        key = 0
+    texts = _HISTORY.get(key, {}).get("texts") or []
+    return _preview(texts) if texts else ""
+
+
+def clear_history(key):
+    """清空指定抽屉的历史（内存+磁盘同步）。返回是否有内容被清。供 __init__ 的 API 路由调用。"""
+    try:
+        key = int(key)
+    except (TypeError, ValueError):
+        key = 0
+    if key < 0:
+        key = 0  # 与 _history_bucket 同一兜底
+    existed = bool(_HISTORY.get(key, {}).get("texts"))
+    _HISTORY.pop(key, None)
+    _save_history()
+    return existed
 
 
 def _history_bucket(key):
@@ -151,21 +223,21 @@ class TextCacheWithHistory(io.ComfyNode):
                     ),
                 ),
                 io.String.Input(
-                    "override_text",
-                    multiline=True,
-                    default="",
-                    socketless=True,
-                    tooltip="手动覆盖：非空时优先输出并记入历史；清空恢复上游（面板标题栏「清空覆盖」按钮可一键清空）",
-                ),
-                io.String.Input(
                     "prefix",
                     multiline=True,
                     default="",
                     socketless=True,
                     tooltip=(
                         "触发词前缀（手动，逗号或换行分隔多个）：始终拼在最终输出段首，与模式无关；"
-                        "可随时增删改，冻结 override_text 后改这里也立即生效"
+                        "可随时增删改，冻结 override_text 后改这里也立即生效（面板「清空上框」一键清空）"
                     ),
+                ),
+                io.String.Input(
+                    "override_text",
+                    multiline=True,
+                    default="",
+                    socketless=True,
+                    tooltip="手动覆盖：非空时优先输出并记入历史；清空恢复上游（面板标题栏「清空下框」按钮可一键清空）",
                 ),
                 io.Combo.Input(
                     "mode",
@@ -203,7 +275,7 @@ class TextCacheWithHistory(io.ComfyNode):
             description=(
                 "文本缓存/上游/历史：自动判定（覆盖文本→上游直通→历史兜底）；"
                 "触发词前缀（手动 prefix 框 + trigger_text 动态端口）恒拼段首、保序去重；"
-                "按 history_key 隔离，每抽屉最近 50 条去重；内存态，重启即清空。"
+                "按 history_key 隔离，每抽屉最近 50 条去重；历史持久化到插件目录 JSON，重启保留。"
             ),
         )
 
@@ -242,8 +314,8 @@ class TextCacheWithHistory(io.ComfyNode):
 
         # 历史记的是拼接后的完整文本：保存节点历史回退同遍即可读到含触发词的最终 prompt
         out_text = _compose(body, prefix, trigger_text)
-        if record:
-            _record(texts, out_text)
+        if record and _record(texts, out_text):
+            _save_history()  # 只在真正新增条目时落盘
 
         # 关键：必须带 ui 返回，否则后端 len(output_ui)>0 不成立 → 不广播 executed
         # 事件 → 前端历史面板永远收不到刷新数据。ui 的值必须是列表（后端会按可迭代展开）。

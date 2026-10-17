@@ -11,8 +11,16 @@ import node_helpers
 import nodes
 from comfy_api.latest import ComfyExtension, io
 
-from .text_cache import TextCacheWithHistory
-from .save_image_metadata import SaveImageMetadata
+from .text_cache import (
+    TextCacheWithHistory,
+    clear_history as _text_cache_clear_history,
+    history_preview as _text_cache_history_preview,
+)
+from .save_image_metadata import (
+    SaveImageMetadata,
+    load_prefix_state as _sim_load_prefix_state,
+    save_prefix_state as _sim_save_prefix_state,
+)
 
 
 # 支持 reference_latents（in-context 参考图）编辑机制的模型类名 → 该模型所需的 reference_latents_method。
@@ -512,6 +520,45 @@ class SplitInpaintExtension(ComfyExtension):
 
 async def comfy_entrypoint() -> SplitInpaintExtension:
     return SplitInpaintExtension()
+
+
+# 文本缓存「清空历史」API：execute 是类方法拿不到节点实例，前端面板按钮只能走 HTTP 路由
+# 清当前节点的历史抽屉（内存 + text_cache_history.json 同步）。
+from server import PromptServer  # noqa: E402
+from aiohttp import web  # noqa: E402
+
+
+@PromptServer.instance.routes.post("/comfy_0DAYE/text_cache/clear")
+async def _text_cache_clear_route(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    ok = _text_cache_clear_history((data or {}).get("key", 0))
+    return web.json_response({"ok": bool(ok)})
+
+
+# 历史清单只读查询：前端面板在节点创建/加载工作流时拉一次，重启后历史记录直接恢复显示
+@PromptServer.instance.routes.get("/comfy_0DAYE/text_cache/list")
+async def _text_cache_list_route(request):
+    return web.json_response(
+        {"history_list": _text_cache_history_preview(request.query.get("key", "0"))}
+    )
+
+
+# 元数据存图「前缀助手」状态：filename_prefix 历史与自定义模板，持久化在 user/0DAYE/
+@PromptServer.instance.routes.get("/comfy_0DAYE/save_image/prefix_state")
+async def _sim_prefix_state_get(request):
+    return web.json_response(_sim_load_prefix_state())
+
+
+@PromptServer.instance.routes.post("/comfy_0DAYE/save_image/prefix_state")
+async def _sim_prefix_state_post(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return web.json_response({"ok": bool(_sim_save_prefix_state(data))})
 
 
 # Fallback: old-style node registration for backward compatibility

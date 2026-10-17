@@ -41,7 +41,7 @@ import folder_paths
 from comfy.cli_args import args
 from comfy_api.latest import io
 
-from .text_cache import latest_history_text
+from .text_cache import USER_DATA_DIR, latest_history_text
 
 # ---------------------------------------------------------------------------
 # 静态图追溯工具（全部只读 hidden prompt 字典，不触发任何执行）
@@ -72,6 +72,10 @@ _STRUCT_PARAM_KEYS = ("sampler", "scheduler", "sigmas", "guider")
 
 # rgthree Power Lora Loader 的动态 LoRA 字段名：lora_1, lora_2, …
 _LORA_LIST_RE = re.compile(r"lora_\d+$")
+
+# easy-use loraStack 的动态 LoRA 字段名：lora_1_name, lora_2_name, …（注意与 rgthree 区分：
+# rgthree 的值是 [名称,开关,权重] 列表，easy 的是字符串控件 + 同名 _strength 系列浮点）
+_EASY_LORA_NAME_RE = re.compile(r"lora_(\d+)_name$")
 
 
 def _is_link(v, prompt):
@@ -269,11 +273,119 @@ def _lora_bundle_items(v):
     return out
 
 
+def _stack_link_items(prompt, node_id, _depth=0):
+    """LORA_STACK 链接目标节点 → [(名称, model强度, clip强度)]，堆栈内按应用顺序（先上游后本级）。
+
+    兼容三类来源（形态靠控件名识别，不看 class_type）：
+    - easy loraStack：lora_{N}_name + lora_{N}_(model_|clip_)?strength 槽位；
+    - easy loraSwitcher：50 槽只应用 select 选中的一个（共享 lora_strength，model=clip 同值）；
+      选中槽为 None 时运行时整个输出 None（连上游堆栈一起丢弃），如实模拟。
+      两者 toggle 关时本级停用、上游透传（与 easy-use 运行时一致）。
+    - LoraManager Randomizer/Stacker 等：loras 组合控件 / lora_syntax 文本。
+    堆栈经 optional_lora_stack / lora_stack 串联时递归。
+    LoraManager Cycler/Pool 的实际条目靠运行时扫描器按索引/过滤从全库选出，
+    prompt 里没有名单，静态拿不到（自然收空）。"""
+    if _depth > 5 or node_id not in prompt:
+        return []
+    node = prompt.get(node_id)
+    inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
+    out = []
+    # 上游堆栈透传（easy 与 LoraManager 两种链接名都认；内联 LORA_STACK 列表兜底）
+    for up_key in ("optional_lora_stack", "lora_stack"):
+        up = inputs.get(up_key)
+        if _is_link(up, prompt):
+            out.extend(_stack_link_items(prompt, str(up[0]), _depth + 1))
+        elif isinstance(up, list):
+            out.extend((nm, st, None) for nm, st in _lora_bundle_items(up))
+    if inputs.get("toggle") in (False, "False", "false", "off"):
+        return out
+    # easy loraSwitcher：只取 select 选中槽（识别特征 = select 控件 + 共享 lora_strength）
+    sel = inputs.get("select")
+    if isinstance(sel, int) and not isinstance(sel, bool) and "lora_strength" in inputs:
+        nm = inputs.get(f"lora_{sel}_name")
+        if not (isinstance(nm, str) and nm and nm.lower() != "none"):
+            return []  # 运行时：选中槽为空 → 输出 None（上游堆栈也丢弃）
+        st = inputs.get("lora_strength")
+        st = st if isinstance(st, (int, float)) else None
+        out.append((nm, st, st))
+        return out
+    # easy loraStack 槽位
+    for key, val in inputs.items():
+        m = _EASY_LORA_NAME_RE.fullmatch(key)
+        if not m or not isinstance(val, str) or not val or val.lower() == "none":
+            continue
+        i = m.group(1)
+        # advanced 模式有 model/clip 分项强度；simple 模式只有 strength（两者同值）
+        ms = inputs.get(f"lora_{i}_model_strength")
+        if not isinstance(ms, (int, float)):
+            ms = inputs.get(f"lora_{i}_strength")
+        cs = inputs.get(f"lora_{i}_clip_strength")
+        out.append((
+            val,
+            ms if isinstance(ms, (int, float)) else None,
+            cs if isinstance(cs, (int, float)) else None,
+        ))
+    # LoraManager 形态：loras 组合控件（仅 active 条目）+ lora_syntax 文本
+    if "loras" in inputs:
+        out.extend((nm, st, None) for nm, st in _lora_bundle_items(inputs.get("loras")))
+    syn = inputs.get("lora_syntax")
+    if isinstance(syn, str) and syn:
+        out.extend((nm, st, None) for nm, st in _parse_lora_syntax_items(syn))
+    return out
+
+
+# easy-use「XYplot_Lora」（XY 轴: LoRA）的动态字段名：lora_name_1, lora_name_2, …（名在前，
+# 注意与 easy loraStack 的 lora_{N}_name 相反；与 JosiaLoraStack 区分靠姊妹强度键 model_str_{i}）
+_XY_LORA_NAME_RE = re.compile(r"lora_name_(\d+)$")
+
+
+def _xy_lora_axis_items(prompt, node_id):
+    """easy「XYplot_Lora」轴节点 → [(名称, model强度, clip强度)]。
+
+    该节点输出 X_Y、经 x_values/y_values 链接挂在 easy xyPlot 上（不在 model 链），
+    轴上每个 LoRA 应用于网格的一列/行。形态：lora_name_{i} + model_str_{i}/clip_str_{i}，
+    lora_count 个活跃槽；input_mode 不含 "Weights" 时运行时全部改用共享
+    model_strength/clip_strength（如实模拟）。识别特征 = model_str_{i} 姊妹键存在
+    （JosiaLoraStack 的强度键是 strength_model_{i}，不匹配即跳过，不识别 Josia）。
+    节点自身的 optional_lora_stack 基础堆栈不在这里跟——轴节点本身也会被主扫描访问，
+    由主循环的侧链钩子统一收集，避免重复计数。"""
+    node = prompt.get(node_id)
+    inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
+    if not any(k.startswith("model_str_") for k in inputs):
+        return []
+    out = []
+    count = inputs.get("lora_count")
+    limit = count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 10
+    no_weights = "Weights" not in str(inputs.get("input_mode", ""))
+    for key, val in inputs.items():
+        m = _XY_LORA_NAME_RE.fullmatch(key)
+        if not m or int(m.group(1)) > limit:
+            continue
+        if not isinstance(val, str) or not val or val.lower() == "none":
+            continue
+        i = m.group(1)
+        if no_weights:
+            ms, cs = inputs.get("model_strength"), inputs.get("clip_strength")
+        else:
+            ms, cs = inputs.get(f"model_str_{i}"), inputs.get(f"clip_str_{i}")
+        out.append((
+            val,
+            ms if isinstance(ms, (int, float)) else None,
+            cs if isinstance(cs, (int, float)) else None,
+        ))
+    return out
+
+
 def _scan_models(prompt, sampler_id, fallback_order, start_node_id=None):
     """找主模型与 LoRA。返回 (模型文件名, 模型目录类型, [(lora名, sm, sc)]，按应用顺序)。
     start_node_id（model_node_id 兜底）非空时从该节点起沿其 model 链上溯；
     否则沿采样器 model 链走；两者都拿不到时退回 BFS 顺序扫描。
-    LoRA 识别：lora_name（标准 LoraLoader）+ lora_N（rgthree Power Lora Loader 动态字段）。"""
+    LoRA 识别：lora_name（标准 LoraLoader）+ lora_N（rgthree Power Lora Loader 动态字段）
+    + loras/lora_stack/lora_syntax（LoraManager）+ lora_{N}_name（easy-use loraStack）。
+    LORA_STACK 侧链（不在 model 链上）：optional_lora_stack（easy loraStackApply/fullLoader）
+    与 lora_stack（LoraManager Lora Loader/LoRA Text Loader）链接统一跟进 _stack_link_items
+    （easy loraStack/loraSwitcher、LoraManager Randomizer/Stacker；串联递归、上游先应用）；
+    easy xyPlot 的 LoRA 轴（XYplot_Lora）经 x_values/y_values 链接跟进 _xy_lora_axis_items。"""
     model_name, model_kind = None, None
     loras = []
     chain = []
@@ -290,18 +402,31 @@ def _scan_models(prompt, sampler_id, fallback_order, start_node_id=None):
         ln = inputs.get("lora_name")
         if isinstance(ln, str) and ln:
             loras.append((ln, inputs.get("strength_model"), inputs.get("strength_clip")))
+        # LORA_STACK 侧链（不在 model 链上）：easy optional_lora_stack（loraStackApply/
+        # fullLoader）与 LoraManager lora_stack（Lora Loader/LoRA Text Loader）→ 跟进目标节点
+        for stk in ("optional_lora_stack", "lora_stack"):
+            sv = inputs.get(stk)
+            if _is_link(sv, prompt):
+                loras.extend(_stack_link_items(prompt, str(sv[0])))
+        # easy-use xyPlot 的 LoRA 轴：XYplot_Lora 经 x_values/y_values 链接挂在 xyPlot 上
+        for ax in ("x_values", "y_values"):
+            av = inputs.get(ax)
+            if _is_link(av, prompt):
+                loras.extend(_xy_lora_axis_items(prompt, str(av[0])))
         # rgthree Power Lora Loader：lora_N = [名称, 开关, 权重]；启用条目按 lora_1→N 顺序收集
         for key, val in inputs.items():
             if _LORA_LIST_RE.fullmatch(key):
                 item = _rgthree_lora_item(val)
                 if item:
                     loras.append((item[0], item[1], None))
-        # LoraManager：loras 组合控件（Lora Loader）+ lora_stack 透传 + lora_syntax 文本（LoRA Text Loader）
+        # LoraManager：loras 组合控件（Lora Loader）+ lora_stack 内联透传 + lora_syntax 文本（LoRA Text Loader）
+        # （lora_stack 为链接时已在上方侧链钩子跟进，这里只收内联列表值）
         if "loras" in inputs:
             for nm, st in _lora_bundle_items(inputs.get("loras")):
                 loras.append((nm, st, None))
-        if isinstance(inputs.get("lora_stack"), list):
-            for nm, st in _lora_bundle_items(inputs["lora_stack"]):
+        lst = inputs.get("lora_stack")
+        if isinstance(lst, list) and not _is_link(lst, prompt):
+            for nm, st in _lora_bundle_items(lst):
                 loras.append((nm, st, None))
         syn = inputs.get("lora_syntax")
         if isinstance(syn, str) and syn:
@@ -494,6 +619,65 @@ def _apply_filename_placeholders(prefix, info):
     return prefix
 
 
+# ---------------------------------------------------------------------------
+# 前端「前缀助手」面板的状态持久化（用户私有数据，仅存 filename_prefix 历史与自定义模板）
+# 存 ComfyUI/user/0DAYE/save_image_metadata_prefix.json：插件更新/重装/换浏览器均不丢。
+# 读写只经 __init__.py 的 HTTP 路由（GET/POST /comfy_0DAYE/save_image/prefix_state）。
+# ---------------------------------------------------------------------------
+
+PREFIX_HISTORY_MAX = 5  # 最近使用条数上限（下拉别太长）
+PREFIX_TEMPLATES_MAX = 10  # 自定义模板条数上限
+
+_PREFIX_STATE_FILE = os.path.join(USER_DATA_DIR, "save_image_metadata_prefix.json")
+
+
+def _prefix_str_list(v, cap):
+    """只收非空字符串、保序去重、截到 cap 条；其它一律丢弃。"""
+    out = []
+    if isinstance(v, list):
+        for s in v:
+            if isinstance(s, str) and s and s not in out:
+                out.append(s)
+            if len(out) >= cap:
+                break
+    return out
+
+
+def load_prefix_state():
+    """读前缀助手状态 {"history": [...], "templates": [...]}；文件缺失/损坏 → 全空。"""
+    try:
+        with open(_PREFIX_STATE_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        raw = None
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "history": _prefix_str_list(raw.get("history"), PREFIX_HISTORY_MAX),
+        "templates": _prefix_str_list(raw.get("templates"), PREFIX_TEMPLATES_MAX),
+    }
+
+
+def save_prefix_state(state):
+    """写前缀助手状态（原子写：tmp + replace；目录不存在自动建）。返回是否成功。"""
+    if not isinstance(state, dict):
+        return False
+    data = {
+        "history": _prefix_str_list(state.get("history"), PREFIX_HISTORY_MAX),
+        "templates": _prefix_str_list(state.get("templates"), PREFIX_TEMPLATES_MAX),
+    }
+    try:
+        os.makedirs(USER_DATA_DIR, exist_ok=True)
+        tmp = _PREFIX_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, _PREFIX_STATE_FILE)
+        return True
+    except Exception as e:
+        print(f"[SaveImageMetadata] 警告：前缀助手状态写盘失败：{e}")
+        return False
+
+
 def build_parameters(info):
     """拼 A1111 格式参数串（CivitAI 解析格式）：
         正面提示词 <lora:名:权重>…
@@ -670,15 +854,9 @@ class SaveImageMetadata(io.ComfyNode):
                     "sanitize", default=True, label_on="脱敏", label_off="不脱敏",
                     tooltip="保存前脱敏：API key/token/密码等敏感控件值与常见令牌格式打码为 [REDACTED]，防止随元数据外泄",
                 ),
-                io.Combo.Input(
-                    "quality",
-                    options=["极高 (95)", "高 (85)", "低 (78)"],
-                    default="高 (85)",
-                    tooltip="JPEG/WEBP 画质档位（PNG 无损，不受影响）：极高=95 / 高=85 / 低=78；quality_custom 填正数时本项被覆盖",
-                ),
-                io.Int.Input(
-                    "quality_custom", default=-1, min=-1, max=100,
-                    tooltip="手动画质数值（-1=跟随上方档位）。填 1–100 时优先生效，覆盖三档选择",
+                io.String.Input(
+                    "quality", default="85", socketless=True,
+                    tooltip="JPEG/WEBP 画质（1–100，PNG 无损不受影响）：前端为单控件「可输入下拉框」，可选预设 95=极高 / 85=高 / 78=低，也可直接输入任意数值；非法输入按 85 处理；旧工作流的档位文本（如「高 (85)」）自动换算",
                 ),
                 io.Int.Input(
                     "positive_node_id", default=-1, min=-1, max=999999,
@@ -738,7 +916,7 @@ class SaveImageMetadata(io.ComfyNode):
     def execute(cls, images, filename_prefix="ComfyUI_Meta",
                 save_png=True, extra_format="JPEG", mode="CivitAI 元数据",
                 embed_parameters=True, embed_lora=True, embed_workflow=False,
-                sanitize=True, quality="高 (85)", quality_custom=-1,
+                sanitize=True, quality="85",
                 positive_node_id=-1, negative_node_id=-1, sampler_node_id=-1,
                 seed_override=-1, steps_override=-1,
                 model_node_id=-1, lora_override="",
@@ -805,9 +983,8 @@ class SaveImageMetadata(io.ComfyNode):
         meta_prompt = _sanitize_obj(prompt) if (sanitize and prompt is not None) else prompt
         meta_pnginfo = _sanitize_obj(extra_pnginfo) if (sanitize and extra_pnginfo) else extra_pnginfo
 
-        # 手动画质数值优先生效（1–100），否则按三档文本解析（_quality_value 两者都兼容）
-        q_raw = quality_custom if isinstance(quality_custom, int) and quality_custom > 0 else quality
-        q_val = _quality_value(q_raw)
+        # 画质：单控件文本（预设 95/85/78 或任意数值），_quality_value 取数字并钳 1–100、非法回退 85
+        q_val = _quality_value(quality)
         extra = {"JPEG": "JPEG", "WEBP": "WEBP"}.get(str(extra_format).upper())
         if not save_png and extra is None:
             print("[SaveImageMetadata] 警告：save_png 关 且 附带格式=不保存，本次不保存任何文件")

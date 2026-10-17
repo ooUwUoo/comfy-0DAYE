@@ -22,8 +22,8 @@ Node that buffers the text output of upstream LLM nodes (prompt expansion / tran
 |---|---|
 | `text` | Connect the upstream LLM output — a socket-only input port (green dot, no textbox; sits below the widgets as it is optional). When the upstream group is **muted (Ctrl+M)**, this receives empty → `自动` falls back to history automatically |
 | `trigger_text` | Dynamic trigger words — a socket-only port; connect a loader's `trigger_words` output (e.g. LoraManager). Only active LoRAs contribute words. Ignored when unconnected/muted |
-| `override_text` | Manual override text (multiline widget; the small dot in front of the widget can also be dragged to convert it into an input port). Highest priority in `自动` mode; output & recorded. Clear it to return to live passthrough (the `清空覆盖` button in the panel header clears it in one click) |
 | `prefix` | Manual trigger-word prefix (multiline widget; separate multiple words with commas/Chinese commas/newlines). Always prepended to the **start** of the final output regardless of mode; edit freely at any time |
+| `override_text` | Manual override text (multiline widget; the small dot in front of the widget can also be dragged to convert it into an input port). Highest priority in `自动` mode; output & recorded. Clear it to return to live passthrough (the `清空下框` button in the panel header clears it in one click) |
 | `history_key` | `-1` = auto (each node instance gets its own isolated history via its instance id). Set the same number on multiple nodes to share one history |
 | `history_index` | Which history entry to output: `0` = latest, up to `49` |
 
@@ -46,8 +46,8 @@ words from the prefix widget + words from the trigger_text port (order preserved
 ## History
 
 - Keeps the latest **50** entries per key, de-duplicated (same text as the newest entry is not re-added)
-- In-memory only — **cleared on ComfyUI restart**
-- The node's built-in panel lists the entries with hover-to-read-full-text, plus `复制` (copy to clipboard) and `回填` (fill back into `override_text`) per row; the panel header has a `清空覆盖` (clear override) button that empties `override_text` in one click (equivalent to Ctrl+A → Delete); refreshes automatically after each run
+- **Persisted** to `ComfyUI/user/0DAYE/text_cache_history.json` (user data folder — survives plugin updates/reinstalls) and automatically restored after a ComfyUI restart, so history in your workflows survives restarts
+- The node's built-in panel lists the entries with hover-to-read-full-text, plus `复制` (copy to clipboard) and `回填` (fill back into `override_text`) per row; the panel header has three clear buttons — `清空上框` (clear `prefix`), `清空下框` (clear `override_text`), `清空历史` (clear this node's history, including the on-disk file; irreversible); refreshes automatically after each run, and the panel restores its content directly after a restart
 
 ## Tips
 
