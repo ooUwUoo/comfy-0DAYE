@@ -214,15 +214,32 @@ def _model_chain(prompt, start_link, limit=50):
 
 
 def _rgthree_lora_item(v):
-    """rgthree Power Lora Loader 单条目值：[名称, 开关, 权重] 数组（其自定义组合 widget 序列化）。
-    返回 (名称, 权重)；禁用/空槽/格式不符返回 None。"""
-    if not isinstance(v, (list, tuple)) or len(v) < 2:
-        return None
-    name, enabled = v[0], v[1]
-    strength = v[2] if len(v) >= 3 and isinstance(v[2], (int, float)) else None
-    if not enabled or not isinstance(name, str) or not name or name.lower() == "none":
-        return None
-    return (name, strength)
+    """rgthree Power Lora Loader 单条目值。
+    兼容两种序列化形态：
+    - 旧版 list: [名称, 开关, 权重]
+    - 新版 dict: {"on": bool, "lora": str, "strength": number, "strengthTwo": number|None}
+      （ComfyUI 新前端把组合 widget 序列化为 dict；strengthTwo 为 clip 强度，省略/空表示与 model 同值）
+    返回 (名称, model强度, clip强度)；禁用/空槽/格式不符返回 None。"""
+    if isinstance(v, dict):
+        if v.get("on") is False:
+            return None
+        name = v.get("lora")
+        if not isinstance(name, str) or not name or name.lower() == "none":
+            return None
+        sm = v.get("strength")
+        sc = v.get("strengthTwo")
+        return (
+            name,
+            sm if isinstance(sm, (int, float)) else None,
+            sc if isinstance(sc, (int, float)) else None,
+        )
+    if isinstance(v, (list, tuple)) and len(v) >= 2:
+        name, enabled = v[0], v[1]
+        sm = v[2] if len(v) >= 3 and isinstance(v[2], (int, float)) else None
+        if not enabled or not isinstance(name, str) or not name or name.lower() == "none":
+            return None
+        return (name, sm, None)
+    return None
 
 
 # LoraManager「LoRA Text Loader」的 <lora:名:模型强度(:clip强度)> 语法标签
@@ -376,10 +393,53 @@ def _xy_lora_axis_items(prompt, node_id):
     return out
 
 
-def _scan_models(prompt, sampler_id, fallback_order, start_node_id=None):
+def _collect_loras_from_node(prompt, nid):
+    """从单个节点收集所有 LoRA 条目 [(名称, model强度, clip强度)]。
+    覆盖：lora_name（标准 LoraLoader）、lora_N（rgthree）、loras（LoraManager）、
+    lora_syntax（LoRA Text Loader）、lora_stack 内联列表、lora_{N}_name（easy loraStack），
+    以及 optional_lora_stack/lora_stack 链接指向的堆栈节点（_stack_link_items 递归）。
+    xyPlot LoRA 轴（x_values/y_values 链接）也一并跟进。"""
+    if nid not in prompt:
+        return []
+    node = prompt[nid]
+    inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
+    out = []
+    ln = inputs.get("lora_name")
+    if isinstance(ln, str) and ln:
+        out.append((ln, inputs.get("strength_model"), inputs.get("strength_clip")))
+    for stk in ("optional_lora_stack", "lora_stack"):
+        sv = inputs.get(stk)
+        if _is_link(sv, prompt):
+            out.extend(_stack_link_items(prompt, str(sv[0])))
+    for ax in ("x_values", "y_values"):
+        av = inputs.get(ax)
+        if _is_link(av, prompt):
+            out.extend(_xy_lora_axis_items(prompt, str(av[0])))
+    for key, val in inputs.items():
+        if _LORA_LIST_RE.fullmatch(key):
+            item = _rgthree_lora_item(val)
+            if item:
+                out.append((item[0], item[1], item[2]))
+    if "loras" in inputs:
+        for nm, st in _lora_bundle_items(inputs.get("loras")):
+            out.append((nm, st, None))
+    lst = inputs.get("lora_stack")
+    if isinstance(lst, list) and not _is_link(lst, prompt):
+        for nm, st in _lora_bundle_items(lst):
+            out.append((nm, st, None))
+    syn = inputs.get("lora_syntax")
+    if isinstance(syn, str) and syn:
+        for nm, st in _parse_lora_syntax_items(syn):
+            out.append((nm, st, None))
+    return out
+
+
+def _scan_models(prompt, sampler_id, fallback_order, start_node_id=None, lora_start_node_id=None):
     """找主模型与 LoRA。返回 (模型文件名, 模型目录类型, [(lora名, sm, sc)]，按应用顺序)。
     start_node_id（model_node_id 兜底）非空时从该节点起沿其 model 链上溯；
     否则沿采样器 model 链走；两者都拿不到时退回 BFS 顺序扫描。
+    lora_start_node_id（lora_node_id 兜底）非空时，额外从该节点扫 LoRA（含其
+    lora_stack/optional_lora_stack 链接），结果追加到链扫描的 LoRA 之后并去重。
     LoRA 识别：lora_name（标准 LoraLoader）+ lora_N（rgthree Power Lora Loader 动态字段）
     + loras/lora_stack/lora_syntax（LoraManager）+ lora_{N}_name（easy-use loraStack）。
     LORA_STACK 侧链（不在 model 链上）：optional_lora_stack（easy loraStackApply/fullLoader）
@@ -399,39 +459,7 @@ def _scan_models(prompt, sampler_id, fallback_order, start_node_id=None):
     for nid in scan:
         node = prompt.get(nid)
         inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
-        ln = inputs.get("lora_name")
-        if isinstance(ln, str) and ln:
-            loras.append((ln, inputs.get("strength_model"), inputs.get("strength_clip")))
-        # LORA_STACK 侧链（不在 model 链上）：easy optional_lora_stack（loraStackApply/
-        # fullLoader）与 LoraManager lora_stack（Lora Loader/LoRA Text Loader）→ 跟进目标节点
-        for stk in ("optional_lora_stack", "lora_stack"):
-            sv = inputs.get(stk)
-            if _is_link(sv, prompt):
-                loras.extend(_stack_link_items(prompt, str(sv[0])))
-        # easy-use xyPlot 的 LoRA 轴：XYplot_Lora 经 x_values/y_values 链接挂在 xyPlot 上
-        for ax in ("x_values", "y_values"):
-            av = inputs.get(ax)
-            if _is_link(av, prompt):
-                loras.extend(_xy_lora_axis_items(prompt, str(av[0])))
-        # rgthree Power Lora Loader：lora_N = [名称, 开关, 权重]；启用条目按 lora_1→N 顺序收集
-        for key, val in inputs.items():
-            if _LORA_LIST_RE.fullmatch(key):
-                item = _rgthree_lora_item(val)
-                if item:
-                    loras.append((item[0], item[1], None))
-        # LoraManager：loras 组合控件（Lora Loader）+ lora_stack 内联透传 + lora_syntax 文本（LoRA Text Loader）
-        # （lora_stack 为链接时已在上方侧链钩子跟进，这里只收内联列表值）
-        if "loras" in inputs:
-            for nm, st in _lora_bundle_items(inputs.get("loras")):
-                loras.append((nm, st, None))
-        lst = inputs.get("lora_stack")
-        if isinstance(lst, list) and not _is_link(lst, prompt):
-            for nm, st in _lora_bundle_items(lst):
-                loras.append((nm, st, None))
-        syn = inputs.get("lora_syntax")
-        if isinstance(syn, str) and syn:
-            for nm, st in _parse_lora_syntax_items(syn):
-                loras.append((nm, st, None))
+        loras.extend(_collect_loras_from_node(prompt, nid))
         if model_name is None:
             for key, kind in (("ckpt_name", ("checkpoints",)),
                               ("unet_name", ("diffusion_models", "unet"))):
@@ -439,8 +467,32 @@ def _scan_models(prompt, sampler_id, fallback_order, start_node_id=None):
                 if isinstance(v, str) and v:
                     model_name, model_kind = v, kind
                     break
+    # 模型名兜底：model 链 + BFS 都没找到（如模型经 Anything Everywhere 广播、不在显式 model
+    # 链上）时，全图扫描 ckpt_name/unet_name。多模型工作流请用 model_node_id 精确指定。
+    if model_name is None:
+        scanned = set(scan)
+        for nid, node in prompt.items():
+            if nid in scanned or not isinstance(node, dict):
+                continue
+            inputs = node.get("inputs", {})
+            for key, kind in (("ckpt_name", ("checkpoints",)),
+                              ("unet_name", ("diffusion_models", "unet"))):
+                v = inputs.get(key)
+                if isinstance(v, str) and v:
+                    model_name, model_kind = v, kind
+                    break
+            if model_name:
+                break
     if chain:
         loras.reverse()  # 链是近→远（应用倒序）→ 反转为加载器→采样器的应用顺序
+    # lora_node_id 兜底：额外从指定节点扫 LoRA，追加到链扫描结果之后并去重（按名称）
+    if lora_start_node_id is not None and lora_start_node_id in prompt:
+        extra = _collect_loras_from_node(prompt, lora_start_node_id)
+        seen = {ln for ln, _, _ in loras}
+        for item in extra:
+            if item[0] not in seen:
+                loras.append(item)
+                seen.add(item[0])
     return model_name, model_kind, loras
 
 
@@ -526,11 +578,13 @@ def _parse_lora_override(text, with_hash=True):
 
 
 def _extract_info(prompt, unique_id, width, height, with_hash=True, sampler_override=None,
-                  model_start=None):
+                  model_start=None, lora_start=None):
     """汇总全部自动提取结果。prompt 为空（异常场景）时只剩尺寸。
     with_hash=False 时跳过模型哈希（仅为文件名占位符解析的场景省一次大文件 IO）。
     sampler_override 非空时指定采样器节点 ID（手动兜底），不再走 BFS 自动识别。
-    model_start（model_node_id 兜底）非空时从该节点起扫模型/LoRA，不再从采样器链走。"""
+    model_start（model_node_id 兜底）非空时从该节点起扫模型/LoRA，不再从采样器链走。
+    lora_start（lora_node_id 兜底）非空时额外从该节点扫 LoRA（含其 lora_stack 链接），
+    与模型链扫描结果合并去重。"""
     info = {
         "positive": "", "negative": "",
         "seed": None, "steps": None, "cfg": None,
@@ -564,7 +618,9 @@ def _extract_info(prompt, unique_id, width, height, with_hash=True, sampler_over
             if _is_link(v, prompt):
                 info[field] = _resolve_text(prompt, str(v[0]))
 
-    model_name, model_kind, loras = _scan_models(prompt, sampler_id, order, start_node_id=model_start)
+    model_name, model_kind, loras = _scan_models(prompt, sampler_id, order,
+                                                  start_node_id=model_start,
+                                                  lora_start_node_id=lora_start)
     if model_name:
         info["model_name"] = os.path.splitext(os.path.basename(model_name))[0]
         if with_hash:
@@ -810,7 +866,7 @@ class SaveImageMetadata(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="SaveImageMetadata",
-            display_name="Save Image Metadata",
+            display_name="保存图像元数据",
             category="0DAYE",
             search_aliases=["save image", "save image metadata", "metadata",
                             "civitai", "civitai metadata", "a1111", "pnginfo", "元数据存图", "存图"],
@@ -832,6 +888,10 @@ class SaveImageMetadata(io.ComfyNode):
                     default="JPEG",
                     tooltip="附带格式：在 PNG 之外再同存一张（一次最多两种格式）。JPEG/WEBP 经 EXIF UserComment 写参数串，CivitAI 可读",
                 ),
+                io.Int.Input(
+                    "quality", default=85, min=1, max=100,
+                    tooltip="JPEG/WEBP 画质（1–100，PNG 无损不受影响）：超高质量 95、高质量 85、一般质量 78，也可输入任意数值",
+                ),
                 io.Combo.Input(
                     "mode",
                     options=["CivitAI 元数据", "原生 ComfyUI"],
@@ -851,12 +911,12 @@ class SaveImageMetadata(io.ComfyNode):
                     tooltip="PNG 额外内嵌 ComfyUI 工作流 JSON（可拖回恢复，文件明显变大，默认关）；仅对 PNG 生效；原生模式下强制嵌入",
                 ),
                 io.Boolean.Input(
+                    "save_workflow_json", default=False, label_on="保存", label_off="不存",
+                    tooltip="额外保存一份独立的工作流 JSON 文件（与图片同名，.json 扩展名，UI 格式可拖回恢复）；默认关",
+                ),
+                io.Boolean.Input(
                     "sanitize", default=True, label_on="脱敏", label_off="不脱敏",
                     tooltip="保存前脱敏：API key/token/密码等敏感控件值与常见令牌格式打码为 [REDACTED]，防止随元数据外泄",
-                ),
-                io.String.Input(
-                    "quality", default="85", socketless=True,
-                    tooltip="JPEG/WEBP 画质（1–100，PNG 无损不受影响）：前端为单控件「可输入下拉框」，可选预设 95=极高 / 85=高 / 78=低，也可直接输入任意数值；非法输入按 85 处理；旧工作流的档位文本（如「高 (85)」）自动换算",
                 ),
                 io.Int.Input(
                     "positive_node_id", default=-1, min=-1, max=999999,
@@ -882,6 +942,10 @@ class SaveImageMetadata(io.ComfyNode):
                     "model_node_id", default=-1, min=-1, max=999999999,
                     tooltip="模型/LoRA 兜底：-1=沿采样器 model 链自动追溯；填节点 ID（如 rgthree Power Lora Loader、Checkpoint 加载器）则从该节点起扫模型与 LoRA 并沿其 model 链上溯。优先级低于 lora_override",
                 ),
+                io.Int.Input(
+                    "lora_node_id", default=-1, min=-1, max=999999999,
+                    tooltip="LoRA 兜底（独立于模型链）：-1=跟随 model_node_id/采样器链自动追溯；填节点 ID（如 LoraManager、rgthree Power Lora Loader、easy-use loraStack）则额外从该节点扫 LoRA（含其 lora_stack/optional_lora_stack 链接）。优先级低于 lora_override",
+                ),
                 io.String.Input(
                     "lora_override", default="", multiline=True, socketless=True,
                     tooltip="手动指定 LoRA 列表（留空=不覆盖）。每行一项，支持「名称:权重」或「<lora:名称:权重>」，省略权重记 1.0。优先级最高",
@@ -906,7 +970,7 @@ class SaveImageMetadata(io.ComfyNode):
             description=(
                 "保存图像并内嵌 CivitAI 可识别的生成参数（A1111 格式），或切原生 ComfyUI 模式"
                 "（与官方 Save Image 一致）。自动追溯提示词/采样参数/模型/LoRA；主存 PNG 加可选附带"
-                "JPEG/WEBP；参数串/LoRA/工作流/脱敏各有独立开关；提示词与采样参数/模型/LoRA 都支持"
+                "JPEG/WEBP；参数串/LoRA/工作流嵌入/独立工作流 JSON/脱敏各有独立开关；提示词与采样参数/模型/LoRA 都支持"
                 "节点 ID 兜底（positive/negative/sampler_node_id）与手动覆盖（positive/negative_text、"
                 "seed/steps/model/lora_override）。"
             ),
@@ -916,10 +980,11 @@ class SaveImageMetadata(io.ComfyNode):
     def execute(cls, images, filename_prefix="ComfyUI_Meta",
                 save_png=True, extra_format="JPEG", mode="CivitAI 元数据",
                 embed_parameters=True, embed_lora=True, embed_workflow=False,
-                sanitize=True, quality="85",
+                save_workflow_json=False,
+                sanitize=True, quality=85,
                 positive_node_id=-1, negative_node_id=-1, sampler_node_id=-1,
                 seed_override=-1, steps_override=-1,
-                model_node_id=-1, lora_override="",
+                model_node_id=-1, lora_node_id=-1, lora_override="",
                 positive_text=None, negative_text=None):
         hidden = getattr(cls, "hidden", None)
         prompt = getattr(hidden, "prompt", None)
@@ -938,6 +1003,7 @@ class SaveImageMetadata(io.ComfyNode):
             with_hash=write_meta,
             sampler_override=(sampler_node_id if isinstance(sampler_node_id, int) and sampler_node_id >= 0 else None),
             model_start=(str(model_node_id) if isinstance(model_node_id, int) and model_node_id >= 0 else None),
+            lora_start=(str(lora_node_id) if isinstance(lora_node_id, int) and lora_node_id >= 0 else None),
         )
         # 提示词覆盖（节点 ID 兜底 → 手动接线最高）：参数串与 %prompt% 占位符共用最终结果
         if isinstance(prompt, dict):
@@ -1022,6 +1088,18 @@ class SaveImageMetadata(io.ComfyNode):
                     exif[0x9286] = _user_comment_bytes(params)
                 img.save(os.path.join(full_output_folder, file), "WEBP",
                          quality=q_val, exif=exif)
+
+            # 独立工作流 JSON：与图片同名 .json（UI 格式，可拖回恢复）；脱敏与 PNG 内嵌一致
+            if save_workflow_json and extra_pnginfo is not None:
+                wf_data = extra_pnginfo.get("workflow")
+                if wf_data is not None:
+                    json_file = base + ".json"
+                    wf_to_dump = _sanitize_obj(wf_data) if sanitize else wf_data
+                    try:
+                        with open(os.path.join(full_output_folder, json_file), "w", encoding="utf-8") as f:
+                            json.dump(wf_to_dump, f, ensure_ascii=False, indent=2)
+                    except OSError as e:
+                        print(f"[SaveImageMetadata] 警告：工作流 JSON 保存失败：{e}")
 
             counter += 1  # 同一张图的两种格式共用编号，下一张图再递增
 

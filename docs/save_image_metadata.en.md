@@ -18,16 +18,18 @@ Saves a main PNG plus an optional sidecar JPEG/WEBP (at most two formats, **no p
 | `embed_parameters` | Embed the A1111 parameter string into the PNG (`tEXt parameters`) |
 | `embed_lora` | Include LoRA info (inline `<lora:...>` tags + `Lora hashes:`) |
 | `embed_workflow` | Embed the workflow into the PNG (default **off**) |
+| `save_workflow_json` | Save a standalone workflow JSON file (default **off**): named after the image with a `.json` extension, in UI format (draggable back into ComfyUI); sanitized with the same rules as the PNG-embedded workflow |
 | `sanitize` | Redact secrets and path usernames before saving (default on) |
-| `quality` | JPEG/WEBP quality: an editable dropdown — presets `95` / `85` (default) / `78`, or type any value in 1–100 |
+| `quality` | JPEG/WEBP quality: an integer input (1–100, default 85; PNG lossless is unaffected). Reference tiers: ultra-high 95, high 85, normal 78 |
 | `positive_node_id` / `negative_node_id` | `-1` = auto. Set a node ID to read the prompt from that node's text widget |
 | `sampler_node_id` | `-1` = auto. Set a node ID to treat that node as the sampler — seed/steps/cfg/sampler/scheduler and model/LoRA are all derived from it |
 | `seed_override` / `steps_override` | `-1` = keep the traced value. `seed` applies when ≥ 0, `steps` applies when > 0 |
-| `model_node_id` | Model/LoRA fallback node ID (-1 = auto-trace via the sampler's model chain). Set it to a node like rgthree Power Lora Loader or a Checkpoint loader to scan models/LoRAs from that node onward |
+| `model_node_id` | Model fallback node ID (-1 = auto-trace via the sampler's model chain). Set it to a node like rgthree Power Lora Loader or a Checkpoint loader to scan models/LoRAs from that node onward |
+| `lora_node_id` | Independent LoRA fallback node ID (-1 = follow `model_node_id`/sampler chain). Set a node ID to additionally scan LoRAs from that node (including its `lora_stack`/`optional_lora_stack` links); results are merged with the model-chain scan and de-duplicated — useful when the LoRA loader is not on the model chain |
 | `lora_override` | LoRA list, one per line; supports `name:weight` or `<lora:name:weight>` (weight defaults to 1.0) |
 | `positive_text` / `negative_text` | Optional socket-only inputs that supply the prompt text directly |
 
-Override priority: manual inputs (the overrides above plus `positive_text` / `negative_text`) > node-ID fallback (`positive/negative/sampler_node_id/model_node_id`) > automatic tracing.
+Override priority: manual inputs (the overrides above plus `positive_text` / `negative_text`) > node-ID fallback (`positive/negative/sampler_node_id/model_node_id/lora_node_id`) > automatic tracing.
 
 ## Outputs
 
@@ -61,6 +63,7 @@ Fully static — reads the hidden prompt graph, never triggers execution.
 - A1111 parameter string: positive prompt + inline ` <lora:name:weight>` tags → `Negative prompt:` line → `Steps:, Sampler:, CFG scale:, Seed:, Size: WxH, Model hash:, Model:, Denoising strength:, Lora hashes:` field lines (missing fields are skipped; `denoise=1` is omitted; both LoRA blocks are dropped when `embed_lora` is off)
 - PNG: `tEXt parameters` (when `embed_parameters` is on); when `embed_workflow` is on or in native mode, `prompt` + each `extra_pnginfo` key are embedded per the official SaveImage convention (draggable back into ComfyUI to restore the workflow)
 - JPEG/WEBP: EXIF UserComment (0x9286), encoded like piexif/A1111 (ASCII prefix or UNICODE prefix + UTF-16 with BOM); the ~64KB EXIF segment limit means the workflow is not embedded. Both formats of the same image share one counter.
+- Standalone workflow JSON (when `save_workflow_json` is on): named after the image with `.json` extension, content taken from `extra_pnginfo.workflow` (UI format, draggable back to restore); sanitized via `_sanitize_obj` (same rules as the PNG embedding); write failures only log a warning and do not abort.
 
 ## Prefix Helper (front-end panel below `filename_prefix`)
 
@@ -73,6 +76,6 @@ Fully static — reads the hidden prompt graph, never triggers execution.
 
 - Runtime-generated text (LLM, …) cannot be traced statically → set `positive_node_id`, or wire `positive_text` / `negative_text`. **Exception: the Text Cache node** — its latest runtime-history entry is read automatically (the cache runs upstream of the sampler, so the same pass already has this round's final text including the `prefix` / `trigger_text` trigger words; no second run needed); the static `override_text` is used only as a fallback when the cache did not execute in this pass
 - Third-party LoRA loaders already supported (auto-traced, no config): standard `LoraLoader` / WAS `LoRA Loader`, rgthree `Power Lora Loader`, LoraManager `Lora Loader (LoraManager)` / `LoRA Text Loader` / `Lora Randomizer` / `Lora Stacker` (incl. LORA_STACK passthrough and `lora_stack` link following) — on the sampler's model chain or via LORA_STACK side links; easy-use `easy loraStack` / `easy loraSwitcher` (followed via the `optional_lora_stack` link from `easy loraStackApply` / `easy fullLoader`; stacks can be chained, upstream applies first, `toggle` off disables that level; the switcher captures only the `select`-ed slot), and the LoRA axis of easy `xyPlot` (`XY inputs: Lora` node followed via `x_values` / `y_values` links); LoraManager `Lora Cycler` / `Lora Pool` pick entries at runtime (random/cycled) with no static list — fill `lora_override` manually; for other loaders use `model_node_id` or `lora_override`
-- Unusual wrappers may hide sampler settings / model / LoRA → set `sampler_node_id` (sampler) or `model_node_id` (model/LoRA source), or use `seed_override` / `steps_override` / `lora_override`
+- Unusual wrappers may hide sampler settings / model / LoRA → set `sampler_node_id` (sampler), `model_node_id` (model source), or `lora_node_id` (LoRA source, when the LoRA loader is not on the model chain), or use `seed_override` / `steps_override` / `lora_override`
 - With several independent sampling pipelines the sampler nearest to this node is used; `sampler_node_id` overrides that inference
 - The first model-hash computation reads the whole model file (a few seconds); later runs hit the sidecar cache

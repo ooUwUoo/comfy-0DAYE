@@ -6,6 +6,6 @@
     "display_name": "文本缓存"
   },
   "SaveImageMetadata": {
-    "display_name": "元数据存图"
+    "display_name": "保存图像元数据"
   }
 }

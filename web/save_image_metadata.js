@@ -2,25 +2,17 @@ import { app } from "../../../scripts/app.js";
 
 // SaveImageMetadata（元数据存图）前端扩展 —— 纯显示层。
 // 节点多语言显示名由 ComfyUI 官方 i18n 机制（locales/<lang>/nodeDefs.json）接管，本文件不再处理标题。
-// 这里只做四件事（后端仍是唯一真源，JS 失效不影响执行）：
+// 这里只做三件事（后端仍是唯一真源，JS 失效不影响执行）：
 // ① 新建节点统一为实测默认宽度（仅宽度；高度沿用 ComfyUI 计算值 + 前缀助手面板占位）。
 // ② mode=原生 ComfyUI 时灰化三个 CivitAI 嵌入开关（embed_parameters/embed_lora/embed_workflow），
 //    提示用户这些开关在原生模式下不生效；后端 write_params/write_workflow 的短路逻辑不变。
-// ③ quality 单控件「可输入下拉框」：前端 1.57 无原生可编辑 Combo（已核实包内无 editable 支持），
-//    故用原生 HTML <input list> + <datalist> 实现——点击下拉出 95/85/78 预设、可直接键入任意数值；
-//    后端 quality 是 String 输入 + _quality_value 容错解析，JS 不生效时退化为普通文本框照样可用。
-// ④ filename_prefix「前缀助手」面板：下拉选「最近使用(5)/我的模板」一键写入 + 占位符 chips 追加；
+// ③ filename_prefix「前缀助手」面板：下拉选「最近使用(5)/我的模板」一键写入 + 占位符 chips 追加；
 //    数据经 GET/POST /comfy_0DAYE/save_image/prefix_state 持久化到服务端 user/0DAYE/（插件更新不丢），
 //    路由不可用时降级为内存态（面板照常可用，只是不持久）。所有操作最终都是写原 widget 值。
-const DEFAULT_W = 306;
+const DEFAULT_W = 295;
 
-// 原生模式下被夺权的开关（参数串/LoRA 强制不写、工作流强制嵌，与后端 L800 短路一致）
+// 原生模式下被夺权的开关（参数串/LoRA 强制不写、工作流强制嵌，与后端短路一致）
 const NATIVE_DISABLED = ["embed_parameters", "embed_lora", "embed_workflow"];
-
-// quality 下拉预设（value=写入值，label=显示注释）；行高与常规 widget 行一致
-const QUALITY_PRESETS = [["95", "极高"], ["85", "高"], ["78", "低"]];
-const QUALITY_ROW_H = 30;
-const QUALITY_DATALIST_ID = "od-quality-presets";
 
 // 前缀助手面板：固定高度（min=max 不参与弹性均分，同历史面板教训）；
 // 条数上限与后端 save_image_metadata.py 的 PREFIX_HISTORY_MAX/PREFIX_TEMPLATES_MAX 保持一致
@@ -66,80 +58,7 @@ function hookModeWidget(node) {
 }
 
 // ---------------------------------------------------------------------------
-// ③ quality 可输入下拉框
-// ---------------------------------------------------------------------------
-
-// 共享 datalist（全文档一个，各节点 input 用 list 属性引用）
-function ensureQualityDatalist() {
-    let dl = document.getElementById(QUALITY_DATALIST_ID);
-    if (!dl) {
-        dl = document.createElement("datalist");
-        dl.id = QUALITY_DATALIST_ID;
-        for (const [v, label] of QUALITY_PRESETS) {
-            const op = document.createElement("option");
-            op.value = v;
-            op.label = label;
-            dl.appendChild(op);
-        }
-        document.body.appendChild(dl);
-    }
-    return dl;
-}
-
-// 把后端自动生成的 quality 文本 widget 换成「可输入下拉框」DOM widget（原位替换、保持序号不变，
-// 使工作流 widgets_values 按索引回填仍然对齐；幂等，onNodeCreated / configure 都会调）。
-function upgradeQualityWidget(node) {
-    if (node._odQualityUpgraded) return;
-    node._odQualityUpgraded = true;
-    ensureQualityDatalist();
-
-    const widgets = node.widgets || [];
-    const idx = widgets.findIndex((w) => w?.name === "quality");
-    const oldVal = idx >= 0 ? widgets[idx]?.value : null;
-
-    const input = document.createElement("input");
-    input.type = "text";
-    input.setAttribute("list", QUALITY_DATALIST_ID);
-    input.value = oldVal != null && oldVal !== "" ? String(oldVal) : "85";
-    input.placeholder = "选预设或输入 1-100";
-    Object.assign(input.style, {
-        width: "100%", height: "100%", boxSizing: "border-box",
-        background: "var(--comfy-input-bg, #222)", color: "var(--input-text, #ddd)",
-        border: "1px solid var(--border-color, #444)", borderRadius: "4px",
-        padding: "0 6px", fontSize: "12px", outline: "none",
-    });
-
-    const domW = node.addDOMWidget("quality", "quality", input, {
-        hideOnZoom: false,
-        getMinHeight: () => QUALITY_ROW_H,
-    });
-    // 固定高度（min=max），不参与弹性均分（与历史面板同一条前端教训）
-    domW.computeLayoutSize = () => ({ minHeight: QUALITY_ROW_H, maxHeight: QUALITY_ROW_H, minWidth: 1 });
-    // 序列化：值随工作流保存，执行时按名字映射回后端 quality 输入
-    domW.serializeValue = () => input.value;
-    // configure 回填：litegraph 会按索引给 widget.value 赋值，转发进输入框
-    let _v = input.value;
-    Object.defineProperty(domW, "value", {
-        get: () => input.value,
-        set: (v) => { _v = v == null ? "" : String(v); input.value = _v; },
-        configurable: true,
-    });
-    input.addEventListener("input", () => { _v = input.value; node.graph?.setDirtyCanvas?.(true, true); });
-
-    // 把 DOM widget 从尾部挪回原 widget 的槽位，并删掉自动生成的那个
-    if (idx >= 0) {
-        const arr = node.widgets;
-        const domIdx = arr.indexOf(domW);
-        if (domIdx >= 0) arr.splice(domIdx, 1);
-        const autoIdx = arr.findIndex((w) => w?.name === "quality" && w !== domW);
-        if (autoIdx >= 0) arr.splice(autoIdx, 1, domW);
-        else arr.splice(Math.min(idx, arr.length), 0, domW);
-        node.setSize([node.size[0], node.computeSize()[1]]);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ④ filename_prefix 前缀助手面板
+// ③ filename_prefix 前缀助手面板
 // ---------------------------------------------------------------------------
 
 const PREFIX_STYLE_ID = "0daye-prefix-helper-style";
@@ -384,13 +303,17 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             const r = onNodeCreated?.apply(this, arguments);
             try {
-                const h = Array.isArray(this.size) ? this.size[1] : 0;
-                if (h) this.setSize([DEFAULT_W, h]);
                 hookModeWidget(this);
                 applyModeState(this);
-                upgradeQualityWidget(this);
                 attachPrefixHelper(this);
                 ensurePanelSpace(this);
+                // 新建节点统一宽度 DEFAULT_W：新前端在 onNodeCreated 时 size 尚未计算（为 [0,0]），
+                // 需延迟到下一帧 setSize，否则 setSize 被跳过、宽度停留在默认 400。
+                setTimeout(() => {
+                    if (this._odConfigured) return;  // 工作流加载的节点保留保存尺寸
+                    const h = Array.isArray(this.size) && this.size[1] ? this.size[1] : this.computeSize?.()?.[1];
+                    if (h) this.setSize([DEFAULT_W, h]);
+                }, 0);
                 // 新建节点自动填入最近使用第一条：仅当值仍是后端默认值、且不是工作流加载/粘贴
                 // （加载/粘贴会先走 configure，_odConfigured 置位，保存值优先）
                 const fw = findWidget(this, "filename_prefix");
@@ -412,7 +335,6 @@ app.registerExtension({
             try {
                 hookModeWidget(this);
                 applyModeState(this);
-                upgradeQualityWidget(this);  // 原 configure 已把保存值写进自动 widget，此处读出并接管
                 attachPrefixHelper(this);
                 ensurePanelSpace(this);
             } catch (_) {}

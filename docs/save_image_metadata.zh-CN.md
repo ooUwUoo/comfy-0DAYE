@@ -1,4 +1,4 @@
-# 元数据存图（Save Image Metadata）
+# 保存图像元数据（Save Image Metadata）
 
 [English](save_image_metadata.en.md) | [返回首页](../README.zh-CN.md)
 
@@ -18,16 +18,18 @@
 | `embed_parameters` | 把 A1111 参数串嵌入 PNG（`tEXt parameters`） |
 | `embed_lora` | 是否包含 LoRA 信息（内联 `<lora:...>` 标签 + `Lora hashes:`） |
 | `embed_workflow` | 是否把工作流嵌入 PNG（默认**关**） |
+| `save_workflow_json` | 额外保存一份独立的工作流 JSON 文件（默认**关**）：与图片同名 `.json` 扩展名，UI 格式可拖回 ComfyUI 恢复；经与 PNG 内嵌同一套脱敏规则处理 |
 | `sanitize` | 保存前对密钥与路径用户名脱敏（默认开） |
-| `quality` | JPEG/WEBP 画质：可输入下拉框，预设 `95` / `85`（默认）/ `78`，也可直接键入 1–100 任意数值 |
+| `quality` | JPEG/WEBP 画质：整数输入框（1–100，默认 85；PNG 无损不受影响）。参考档位：超高质量 95、高质量 85、一般质量 78 |
 | `positive_node_id` / `negative_node_id` | `-1` = 自动。填节点 ID 则从该节点的文本控件抓提示词 |
 | `sampler_node_id` | `-1` = 自动。填节点 ID 则把该节点当采样器解析——seed/steps/cfg/采样器/调度器与模型、LoRA 全部从它派生 |
 | `seed_override` / `steps_override` | `-1` = 不覆盖。`seed` 为 ≥0 生效，`steps` 为 >0 生效 |
-| `model_node_id` | 模型/LoRA 兜底节点 ID（-1=自动沿采样器 model 链）。填 rgthree Power Lora Loader / Checkpoint 加载器等节点 ID，从该节点起扫模型与 LoRA |
+| `model_node_id` | 模型兜底节点 ID（-1=自动沿采样器 model 链）。填 rgthree Power Lora Loader / Checkpoint 加载器等节点 ID，从该节点起扫模型与 LoRA |
+| `lora_node_id` | LoRA 独立兜底节点 ID（-1=跟随 model_node_id/采样器链自动追溯）。填节点 ID 则额外从该节点扫 LoRA（含其 lora_stack/optional_lora_stack 链接），与模型链扫描结果合并去重——适用于 LoRA 加载器不在 model 链上的场景 |
 | `lora_override` | LoRA 列表，每行一项；支持「名称:权重」或 `<lora:名称:权重>`（省略权重记 1.0） |
 | `positive_text` / `negative_text` | optional 纯连线输入，直接提供提示词文本 |
 
-覆盖优先级：手动输入（上述各 override 与 `positive_text` / `negative_text`）> 节点 ID 兜底（`positive/negative/sampler_node_id/model_node_id`）> 自动追溯。
+覆盖优先级：手动输入（上述各 override 与 `positive_text` / `negative_text`）> 节点 ID 兜底（`positive/negative/sampler_node_id/model_node_id/lora_node_id`）> 自动追溯。
 
 ## 输出
 
@@ -61,6 +63,7 @@
 - A1111 参数串：正面提示词 + ` <lora:名:权重>` 内联标签 → `Negative prompt:` 行 → `Steps:, Sampler:, CFG scale:, Seed:, Size: WxH, Model hash:, Model:, Denoising strength:, Lora hashes:` 字段行（缺字段跳过；denoise=1 不写；`embed_lora` 关则 LoRA 两块都省略）
 - PNG：`tEXt parameters`（`embed_parameters` 开时）；`embed_workflow` 开或原生模式再按官方 SaveImage 约定嵌 `prompt` + `extra_pnginfo` 各键（可拖回 ComfyUI 恢复工作流）
 - JPEG/WEBP：EXIF UserComment（0x9286），编码与 piexif/A1111 同约定（ASCII 前缀或 UNICODE 前缀 + UTF-16 带 BOM）；EXIF 单段约 64KB 限制，故不嵌工作流。同一张图的两种格式共用计数器编号。
+- 独立工作流 JSON（`save_workflow_json` 开时）：与图片同名 `.json`，内容取 `extra_pnginfo.workflow`（UI 格式，可拖回 ComfyUI 恢复）；经 `_sanitize_obj` 脱敏（与 PNG 内嵌同一套规则），写入失败只告警不中断。
 
 ## 前缀助手（`filename_prefix` 下方的前端面板）
 
@@ -73,6 +76,6 @@
 
 - LLM 等运行时生成文本静态追溯不到 → `positive_node_id` 填节点 ID，或 `positive_text` / `negative_text` 手动接线。**文本缓存节点例外**：自动读其运行时历史最新一条（文本缓存在采样链上游、必先于本节点执行，同一遍运行即可读到本轮最终文本，含 `prefix` / `trigger_text` 触发词前缀，无需跑两遍）；该节点本遍未执行时才退回静态 `override_text`
 - 已适配的第三方 LoRA 加载器（自动追溯，无需配置）：标准 `LoraLoader` / WAS `LoRA Loader`、rgthree `Power Lora Loader`、LoraManager `Lora Loader (LoraManager)` / `LoRA Text Loader` / `Lora Randomizer` / `Lora Stacker`（含 LORA_STACK 堆栈透传与 `lora_stack` 链接跟进）——以上在采样器 model 链上或经 LORA_STACK 侧链；easy-use `easy loraStack` / `easy loraSwitcher`（经 `optional_lora_stack` 链接从 `easy loraStackApply` / `easy fullLoader` 跟进，堆栈可串联、上游先应用，`toggle` 关时本级停用；switcher 只收 `select` 选中槽）、easy `xyPlot` 的 LoRA 轴（`XY inputs: Lora` 节点经 `x_values`/`y_values` 链接跟进）；LoraManager `Lora Cycler` / `Lora Pool` 的实际条目靠运行时随机/轮选，静态拿不到——请用 `lora_override` 手动填；其它冷门加载器用 `model_node_id` 指定，或 `lora_override` 手动填
-- 冷门封装导致采样参数 / 模型 / LoRA 追溯不到 → `sampler_node_id` 指定采样器解析、`model_node_id` 指定模型/LoRA 来源节点，或直接用 `seed_override` / `steps_override` / `lora_override` 手动覆盖
+- 冷门封装导致采样参数 / 模型 / LoRA 追溯不到 → `sampler_node_id` 指定采样器解析、`model_node_id` 指定模型来源节点、`lora_node_id` 指定 LoRA 来源节点（LoRA 加载器不在 model 链上时用），或直接用 `seed_override` / `steps_override` / `lora_override` 手动覆盖
 - 多条独立采样流水线时取离本节点最近的采样器；`sampler_node_id` 可显式指定，绕过该推断
 - 模型哈希首次计算读完整模型文件（数秒），之后命中边车缓存
