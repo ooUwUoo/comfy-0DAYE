@@ -21,6 +21,7 @@ from .save_image_metadata import (
     load_prefix_state as _sim_load_prefix_state,
     save_prefix_state as _sim_save_prefix_state,
 )
+from .image_compare import ImageCompare
 
 
 # 支持 reference_latents（in-context 参考图）编辑机制的模型类名 → 该模型所需的 reference_latents_method。
@@ -515,7 +516,7 @@ WEB_DIRECTORY = "./web"
 
 class SplitInpaintExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [SplitInpaint, TextCacheWithHistory, SaveImageMetadata]
+        return [SplitInpaint, TextCacheWithHistory, SaveImageMetadata, ImageCompare]
 
 
 async def comfy_entrypoint() -> SplitInpaintExtension:
@@ -566,10 +567,12 @@ NODE_CLASS_MAPPINGS = {
     "SplitInpaint": SplitInpaint,
     "TextCacheWithHistory": TextCacheWithHistory,
     "SaveImageMetadata": SaveImageMetadata,
+    "0DAYE_ImageCompare": ImageCompare,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     # 英文基准（ComfyUI 官方 i18n 约定）；中文显示名由 locales/zh/nodeDefs.json 提供
     "SplitInpaint": "Split Inpaint",
     "TextCacheWithHistory": "Text Cache",
     "SaveImageMetadata": "Save Image Metadata",
+    "0DAYE_ImageCompare": "Image Compare",
 }
