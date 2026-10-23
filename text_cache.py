@@ -18,11 +18,11 @@
     唯一差异（override 为空时手动输出空串而非回退）无实际用途。）
 
 text 为纯连线输入端口（force_input：绿色圆点、无文本框，optional → 位于其它控件下方），
-接上游直通；手动输入/覆盖请用 override_text 文本框（socketless）：「回填」按钮写入它并切
+接上游直通；手动输入/覆盖请用 override_text 文本框：「回填」按钮写入它并切
 mode=自动，清空它即可恢复直通（面板标题栏「清空下框」按钮一键清空）。
 
 触发词前缀（v4 新增，三种模式外层统一生效，输出恒为「前缀 + 主体」，前缀固定段首）：
-  - prefix：socketless 多行文本框，手动触发词，逗号/换行分隔，可随时增删改，随工作流保存；
+  - prefix：多行文本框（框前小圆点可拖线转端口），手动触发词，逗号/换行分隔，可随时增删改，随工作流保存；
     冻结 override_text 后仍可独立改前缀，下次出图即生效、不破坏冻结。
   - trigger_text：optional + forceInput 纯端口，接 LoraManager 等加载器的 trigger_words 输出，
     随 LoRA 开关动态变化（仅 active 的 LoRA 贡献词）；未接/静音收 None 兜底空。
@@ -203,6 +203,13 @@ class TextCacheWithHistory(io.ComfyNode):
             node_id="TextCacheWithHistory",
             display_name="Text Cache",
             category="0DAYE",
+            # 【勿给下面三个文本框加 socketless=True】（2026-10-19 实测 + 前端 bundle 反编译证实）：
+            # 前端「建端口」读的是 widget.options.socketless——多行文本框的 options 由 addMultilineWidget
+            # 构造，只含 getValue/setValue/minNodeSize，根本拿不到该标记 → 前端照样 addInput() 建出端口；
+            # 而「渲染端口」读的是节点定义里的 spec.socketless → 给该端口打上 pointer-events-none invisible。
+            # 两个数据源不一致的后果：端口「已存在但隐形且不可点」，并且一旦接线，前端按 byConnection
+            # 抑制掉整个文本框控件 → 文本框与端口一起消失、还断不开（表现为节点界面错乱、控件被吞）。
+            # 去掉 socketless 后接线即标准端口模式（端口可见、带标签、可断开），对执行逻辑零影响。
             inputs=[
                 io.String.Input(
                     "text",
@@ -222,22 +229,32 @@ class TextCacheWithHistory(io.ComfyNode):
                         "只含 active 开启的 LoRA 的词；与手动 prefix 合并去重后拼在段首。未接/静音时忽略"
                     ),
                 ),
+                io.Boolean.Input(
+                    "prefix_switch",
+                    default=False,
+                    label_on="前缀开",
+                    label_off="前缀关",
+                    tooltip=(
+                        "手动 prefix 文本框的开关。"
+                        "关闭时手动前缀不再拼入输出；trigger_text 动态端口不受影响。"
+                        "开关值随工作流保存。"
+                    ),
+                ),
                 io.String.Input(
                     "prefix",
                     multiline=True,
                     default="",
-                    socketless=True,
-                    advanced=True,
+                    # 显隐由 prefix_switch 开关控制
                     tooltip=(
-                        "触发词前缀（手动，逗号或换行分隔多个）：始终拼在最终输出段首，与模式无关；"
-                        "可随时增删改，冻结 override_text 后改这里也立即生效（面板「清空上框」一键清空）"
+                        "触发词前缀（手动，逗号或换行分隔多个）：开关开启时拼在最终输出段首，与模式无关；"
+                        "可随时增删改，冻结 override_text 后改这里也立即生效（面板「清空上框」一键清空）。"
+                        "关闭 prefix_switch 时不参与拼接。"
                     ),
                 ),
                 io.String.Input(
                     "override_text",
                     multiline=True,
                     default="",
-                    socketless=True,
                     tooltip="手动覆盖：非空时优先输出并记入历史；清空恢复上游（面板标题栏「清空下框」按钮可一键清空）",
                 ),
                 io.Combo.Input(
@@ -284,8 +301,8 @@ class TextCacheWithHistory(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, mode, text=None, trigger_text=None, override_text="", prefix="",
-                history_key=-1, history_index=0):
+    def execute(cls, mode, text=None, trigger_text=None, override_text="",
+                prefix_switch=False, prefix="", history_key=-1, history_index=0):
         # text / trigger_text 都是 optional 输入：未连线时执行器根本不传该 kwarg（必须有默认值），
         # 上游被静音时传 None；两种「空」统一兜底为 ""。
         if text is None:
@@ -295,6 +312,9 @@ class TextCacheWithHistory(io.ComfyNode):
         if override_text is None:
             override_text = ""
         if prefix is None:
+            prefix = ""
+        # prefix_switch 关闭时手动 prefix 不参与拼接
+        if not prefix_switch:
             prefix = ""
 
         texts = _history_bucket(history_key)

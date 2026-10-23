@@ -22,7 +22,8 @@ Node that buffers the text output of upstream LLM nodes (prompt expansion / tran
 |---|---|
 | `text` | Connect the upstream LLM output — a socket-only input port (green dot, no textbox; sits below the widgets as it is optional). When the upstream group is **muted (Ctrl+M)**, this receives empty → `自动` falls back to history automatically |
 | `trigger_text` | Dynamic trigger words — a socket-only port; connect a loader's `trigger_words` output (e.g. LoraManager). Only active LoRAs contribute words. Ignored when unconnected/muted |
-| `prefix` | Manual trigger-word prefix (multiline widget; separate multiple words with commas/Chinese commas/newlines). Always prepended to the **start** of the final output regardless of mode; edit freely at any time |
+| `prefix_switch` | Manual-prefix switch (default off). When off, the `prefix` widget is collapsed/hidden and its words are not prepended; the dynamic `trigger_text` port is unaffected |
+| `prefix` | Manual trigger-word prefix (multiline widget; separate multiple words with commas/Chinese commas/newlines; the small dot in front of the widget can also be dragged to convert it into an input port — the widget then collapses and a visible, disconnectable port remains). Always prepended to the **start** of the final output regardless of mode; edit freely at any time; only applied when `prefix_switch` is on |
 | `override_text` | Manual override text (multiline widget; the small dot in front of the widget can also be dragged to convert it into an input port). Highest priority in `自动` mode; output & recorded. Clear it to return to live passthrough (the `清空下框` button in the panel header clears it in one click) |
 | `history_key` | `-1` = auto (each node instance gets its own isolated history via its instance id). Set the same number on multiple nodes to share one history |
 | `history_index` | Which history entry to output: `0` = latest, up to `49` |

@@ -18,11 +18,11 @@ import { app } from "../../../scripts/app.js";
 import { isVueNodes, collapseFit, installCollapseFit, onEngineSwitch } from "./od_engine.js";
 
 const NODE_NAME = "TextCacheWithHistory";
-const PANEL_H = 160; // 默认面板高度（px）
+const PANEL_H = 170; // 默认面板高度（px）
 const PANEL_MIN = 80; // 面板最小高度（px，拖拽手柄/节点缩放的硬下限）
 const PANEL_MAX = 1000; // 面板最大高度（px，拖拽手柄上限）
-const DEFAULT_W = 314; // 新建节点默认宽（按用户工作流实测尺寸）
-const DEFAULT_H = 448; // 新建节点默认高（v4 多了 prefix 多行框与 trigger_text 端口，相应加高）
+const DEFAULT_W = 310; // 新建节点默认宽（按用户工作流实测尺寸）
+const DEFAULT_H = 470; // 新建节点默认高（含 prefix_switch 开关、历史面板默认 170px）
 const ROW_BRIEF_MAX = 120; // 行内展示的截断长度（字符）
 
 const STYLE_ID = "0daye-histpanel-style";
@@ -476,8 +476,9 @@ app.api?.addEventListener?.("executed", (e) => {
 //             「画得出但点不动」（绘制不走可见性判定，命中测试走）。
 // deriveWidgetSurfaces 的 canvas 面只读顶层 w.advanced（不读 options.advanced），
 // 故不动 _visibility.surfaces.canvas 时旧版天然平铺可点，与「LiteGraph 全平铺零副作用」一致。
-// 与后端 advanced=True 清单保持一致：mode、prefix、history_key、history_index。
-const ADV_WIDGETS = ["mode", "prefix", "history_key", "history_index"];
+// 与后端 advanced=True 清单保持一致：mode、history_key、history_index。
+// prefix 已退出高级区（显隐交给 prefix_switch 开关，见 applyPrefixVisibility）。
+const ADV_WIDGETS = ["mode", "history_key", "history_index"];
 function applyAdvancedFallback(node) {
   for (const nm of ADV_WIDGETS) {
     const w = node.widgets?.find((x) => x.name === nm);
@@ -490,6 +491,123 @@ function applyAdvancedFallback(node) {
       vis.surfaces.panel = "advanced";
     }
   }
+}
+
+// prefix 文本框显隐（对齐 Josia 编码器的 negative_switch 模式）：
+// 核心 = prefixWidget.hidden = !prefix_switch.value；hidden 是引擎无关原生字段，
+// 两引擎都会跳过该行、下方 override_text 上移吃掉空间，无需手动算节点高度。
+// 三时机应用（对抗引擎挂载重置与工作流重载覆盖）：
+//   ① onNodeCreated 初始化 + requestAnimationFrame 再一次（Vue 挂载可能重置 hidden）；
+//   ② prefix_switch 的 callback 包装：先调原 callback 再应用；
+//   ③ configure 加载后再应用一次（widget 值先被恢复，不重算 hidden 会按默认重现）。
+// 注意：开关回调里 this 是 widget 而非 node，用闭包 node 传入。
+function applyPrefixVisibility(node) {
+  const sw = node.widgets?.find((w) => w.name === "prefix_switch");
+  const pf = node.widgets?.find((w) => w.name === "prefix");
+  if (!sw || !pf) return;
+  pf.hidden = !sw.value;
+  try { node.setDirtyCanvas(true, true); } catch (_) {}
+}
+function hookPrefixSwitchCallback(node) {
+  const sw = node.widgets?.find((w) => w.name === "prefix_switch");
+  if (!sw || sw._odPrefixHooked) return;
+  sw._odPrefixHooked = true;
+  const orig = sw.callback;
+  sw.callback = function (v, ...args) {
+    if (orig) orig.call(this, v, ...args);
+    applyPrefixVisibility(node); // 闭包：callback 里 this 是 widget
+  };
+}
+
+// —— Vue 连线端点校正（2026-10-23 两次失败后重写，勿删）——
+// 现象：prefix / override_text 接线后，连线端点偏离端口圆点（prefix 偏上 ~14px、override 偏下 ~12px），
+//   固定不动，重启 ComfyUI 后依旧。
+// 根因（bundle 反编译 + 控制台实测）：
+//   1. 连线端点两级取值——①LayoutStore.slotOffsets 官方实测快照（本节点始终缺快照）；
+//      ②算术兜底 getWidgetSlotY 读 input.pos（优先）/ widget.y + 10。
+//   2. input.pos 会被 LGraphNode._arrangeWidgetInputSlots() 在 arrange() 里**强制覆盖**成
+//      widget.y + NODE_SLOT_HEIGHT*0.5 —— 旧版 LiteGraph 布局模型值。
+//   3. 旧版模型的 widget.y 与 Vue CSS Grid DOM 的真实行布局结构性错位：
+//      旧模型按 prefix 整行可见 50px 算 y，但 Vue DOM 在 prefix_switch 开启时 prefix 也是 50px（一致）、
+//      关闭时 prefix hidden 整行被丢弃 → 两者永远不同步。更糟的是 mode/history_key/history_index
+//      在 Vue 折叠态下 DOM 不渲染（不在 slotOffsets 里），但旧模型 widget.y 照样递增 → 差 34~64px。
+//      我们自己写 pos 后调用 setDirtyCanvas → 触发 arrange → 立即被覆盖 → 白写。
+//   4. 纯端口 text/trigger_text 无 widget，isWidgetInputSlot 为 false → 不走 _arrangeWidgetInputSlots
+//      → pos 不会被覆盖，所以它们恰好对得上。
+// 修法（纯显示层，三层齐下）：
+//   A. installPosSync 里覆写 node._arrangeWidgetInputSlots：Vue 模式下直接 return（旧版布局模型
+//      的 widget.y 在 CSS Grid 体系里没有任何发言权，跑起来只会污染 pos）。旧版引擎走原逻辑。
+//   B. syncWidgetInputPos 按官方 syncSlotOffsets 同款公式实测 DOM [data-slot-key] 圆点，写
+//      input.pos（现在没人覆盖它了）。标题高不硬编码：text(0) 纯端口的内容 y 前端恒按
+//      (0+0.7)*NODE_SLOT_HEIGHT=14 渲染/兜底 → 用它反推最稳。
+//   C. 去掉 syncWidgetInputPos 里的 setDirtyCanvas —— 它是触发 overwrite 循环的源头。
+//      后续需要连线层重绘时 MutationObserver 会自然触发（接线/折叠/展开都会改 DOM）。
+// 触发：MutationObserver（childList+subtree，监听 DOM 行结构变化）+ onNodeCreated/onAdded/configure
+// 三时机。rAF 去抖，重测仅 ~10 次 rect。
+const VUE_TITLE_FALLBACK = 30; // Z.NODE_TITLE_HEIGHT 兜底（仅 text 端口不在 DOM 时用到）
+function syncWidgetInputPos(node) {
+  if (!isVueNodes() || !node.inputs?.length) return;
+  const el = document.querySelector(`[data-node-id="${String(node.id)}"]`);
+  if (!el) return;
+  const nr = el.getBoundingClientRect();
+  const scale = nr.width / el.offsetWidth;
+  if (!(scale > 0)) return;
+  const yRel = new Map(); // 输入序号 → 圆点中心相对节点元素顶部（含标题）的 y
+  for (const s of el.querySelectorAll("[data-slot-key]")) {
+    const m = new RegExp(`^${String(node.id)}-in-(\\d+)$`).exec(s.dataset.slotKey || "");
+    if (!m) continue;
+    const r = s.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    yRel.set(Number(m[1]), (r.top + r.height / 2 - nr.top) / scale);
+  }
+  if (!yRel.size) return;
+  const y0 = yRel.get(0);
+  const titleH = y0 != null ? y0 - 14 : VUE_TITLE_FALLBACK;
+  node.inputs.forEach((inp, ix) => {
+    const y = yRel.get(ix);
+    if (y == null) return; // 高级折叠等未渲染的端口跳过（展开时 observer 会再触发）
+    inp.pos = [0, Math.round((y - titleH) * 10) / 10]; // 直接写；_arrangeWidgetInputSlots 已被覆写为 no-op
+  });
+}
+function schedulePosSync(node) {
+  if (!isVueNodes()) return;
+  cancelAnimationFrame(node._odPosRaf);
+  node._odPosRaf = requestAnimationFrame(() => {
+    node._odPosRaf = 0;
+    syncWidgetInputPos(node);
+  });
+}
+function installPosSync(node) {
+  // 关键：覆写 _arrangeWidgetInputSlots（LGraphNode 原型方法，arrange() 内调用）。
+  //   旧版 Vue 模式下这个函数会强制覆盖所有 widget-linked input 的 pos 为 widget.y + 10
+  //   （旧模型值），与 CSS Grid DOM 真实位置结构性错位 → 我们写的 pos 被立即覆盖。
+  //   Vue 模式下旧版布局模型没有任何发言权，直接 no-op。旧版引擎走原逻辑。
+  if (!node._odOrigArrangeWidgetSlots && typeof node._arrangeWidgetInputSlots === "function") {
+    node._odOrigArrangeWidgetSlots = node._arrangeWidgetInputSlots.bind(node);
+  }
+  node._arrangeWidgetInputSlots = function () {
+    if (!isVueNodes()) return this._odOrigArrangeWidgetSlots?.();
+    return; // Vue 模式下旧版布局模型的 widget.y 不代表真实行位置，跳过
+  };
+  if (node._odPosObs) {
+    schedulePosSync(node);
+    return;
+  }
+  schedulePosSync(node);
+  let tries = 0;
+  const tryAttach = () => { // Vue 挂载晚于 onAdded，元素未出现时短暂重试（上限 ~6s 自止）
+    if (node._odPosObs) return;
+    const el = document.querySelector(`[data-node-id="${String(node.id)}"]`);
+    if (!el) {
+      if (++tries < 60) setTimeout(tryAttach, 100);
+      return;
+    }
+    // 行结构变化（接线换行 / 开关折叠 / 高级展开）→ 下一帧重测；rAF 去抖，重测仅 ~10 次 rect
+    node._odPosObs = new MutationObserver(() => schedulePosSync(node));
+    node._odPosObs.observe(el, { childList: true, subtree: true });
+    schedulePosSync(node);
+  };
+  tryAttach();
 }
 
 app.registerExtension({
@@ -518,8 +636,12 @@ app.registerExtension({
       const r = onNodeCreated?.apply(this, arguments);
       autoAssignKey(this);
       attachPanel(this);
+      installPosSync(this); // Vue 连线端点校正（接线/折叠后行变位，见 syncWidgetInputPos）
       applyAdvancedFallback(this);
-      // 新建节点统一为实测默认尺寸 314×360；
+      hookPrefixSwitchCallback(this);
+      applyPrefixVisibility(this);
+      requestAnimationFrame(() => applyPrefixVisibility(this)); // Vue 挂载可能重置 hidden，下一帧固化
+      // 新建节点统一为实测默认尺寸 314×448；
       // 加载工作流走 configure（size 随后被保存值覆盖），不受影响。
       try { this.setSize([DEFAULT_W, DEFAULT_H]); } catch (_) {}
       // 折叠态高度自适应（仅 Nodes 2.0）：新建即收缩到折叠态实际高度（4 项 advanced 折叠
@@ -548,7 +670,10 @@ app.registerExtension({
       const ra = origOnAdded?.apply(this, arguments);
       autoAssignKey(this);
       if (this._odHp) applyPanelRootH(this._odHp);
+      installPosSync(this); // 幂等；兼兜引擎现场切换伴随的节点重建
       applyAdvancedFallback(this);
+      hookPrefixSwitchCallback(this);
+      applyPrefixVisibility(this);
       installCollapseFit(this); // 幂等；兼兜引擎现场切换伴随的节点重建
       return ra;
     };
@@ -564,6 +689,9 @@ app.registerExtension({
         applyPanelRootH(this._odHp); // Vue 模式 root 像素高随 p.h 恢复
       }
       applyAdvancedFallback(this);
+      hookPrefixSwitchCallback(this);
+      applyPrefixVisibility(this);
+      installPosSync(this); // 加载后按当前 DOM 重测连线端点（幂等）
       installCollapseFit(this); // 只装访问器不收缩：加载节点尊重保存尺寸，后续手动折叠才收缩
       refreshHistory(this); // configure 后 widget 值（含 history_key）已就位，再拉一次历史
       return rc;
