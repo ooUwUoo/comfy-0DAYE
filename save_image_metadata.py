@@ -1091,14 +1091,16 @@ class SaveImageMetadata(io.ComfyNode):
                 jpg = img if img.mode == "RGB" else img.convert("RGB")  # JPEG 不支持 alpha
                 exif = Image.Exif()
                 if write_params:
-                    exif[0x9286] = _user_comment_bytes(params)  # UserComment，CivitAI 读取点
+                    # UserComment 必须进 EXIF 子 IFD（0x8769）——直接 exif[0x9286] 会落根 IFD，
+                    # 按规范解析的 CivitAI/exiftool 可能读不到（2026-10-24 Pillow 实测）
+                    exif.get_ifd(0x8769)[0x9286] = _user_comment_bytes(params)
                 jpg.save(os.path.join(full_output_folder, file), "JPEG",
                          quality=q_val, exif=exif)
             elif extra == "WEBP":
                 file = base + ".webp"
                 exif = Image.Exif()
                 if write_params:
-                    exif[0x9286] = _user_comment_bytes(params)
+                    exif.get_ifd(0x8769)[0x9286] = _user_comment_bytes(params)
                 img.save(os.path.join(full_output_folder, file), "WEBP",
                          quality=q_val, exif=exif)
 
