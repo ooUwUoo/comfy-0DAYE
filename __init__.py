@@ -22,6 +22,13 @@ from .save_image_metadata import (
     save_prefix_state as _sim_save_prefix_state,
 )
 from .image_compare import ImageCompare
+from .image_cache_preview import (
+    ImageCachePreview,
+    clear_drawer as _image_cache_clear_drawer,
+    drawer_items as _image_cache_drawer_items,
+    group_file as _image_cache_group_file,
+    reveal_group as _image_cache_reveal_group,
+)
 
 
 # 支持 reference_latents（in-context 参考图）编辑机制的模型类名 → 该模型所需的 reference_latents_method。
@@ -516,7 +523,7 @@ WEB_DIRECTORY = "./web"
 
 class SplitInpaintExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [SplitInpaint, TextCacheWithHistory, SaveImageMetadata, ImageCompare]
+        return [SplitInpaint, TextCacheWithHistory, SaveImageMetadata, ImageCompare, ImageCachePreview]
 
 
 async def comfy_entrypoint() -> SplitInpaintExtension:
@@ -547,6 +554,55 @@ async def _text_cache_list_route(request):
     )
 
 
+# 图像缓存预览：抽屉索引只读查询（面板在加载工作流/重启后恢复显示，无需先执行）
+@PromptServer.instance.routes.get("/comfy_0DAYE/image_cache/list")
+async def _image_cache_list_route(request):
+    return web.json_response(
+        {"items": _image_cache_drawer_items(request.query.get("key", "0"))}
+    )
+
+
+# 图像缓存预览：清空某抽屉索引（不删缓存文件，文件归全局池按容量淘汰）
+@PromptServer.instance.routes.post("/comfy_0DAYE/image_cache/clear")
+async def _image_cache_clear_route(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return web.json_response({"ok": bool(_image_cache_clear_drawer((data or {}).get("key", 0)))})
+
+
+# 图像缓存预览：缓存图片读取。官方 /view 只认 output/temp/input，
+# 读不到 user/0DAYE/image_cache，故走本插件路由；gid 唯一且文件不再变化 → 可长缓存。
+@PromptServer.instance.routes.get("/comfy_0DAYE/image_cache/view")
+async def _image_cache_view_route(request):
+    path = _image_cache_group_file(
+        request.query.get("id", ""), request.query.get("kind", "preview")
+    )
+    if not path:
+        raise web.HTTPNotFound()
+    resp = web.FileResponse(path)
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+# 图像缓存预览：在系统文件管理器中定位并选中缓存图片（右键菜单「打开图片路径」）
+@PromptServer.instance.routes.post("/comfy_0DAYE/image_cache/reveal")
+async def _image_cache_reveal_route(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    ok, info = _image_cache_reveal_group(
+        str((data or {}).get("id", "")), str((data or {}).get("kind", "preview"))
+    )
+    if not ok:
+        if info == "not_found":
+            raise web.HTTPNotFound()
+        return web.json_response({"ok": False, "error": info}, status=500)
+    return web.json_response({"ok": True})
+
+
 # 元数据存图「前缀助手」状态：filename_prefix 历史与自定义模板，持久化在 user/0DAYE/
 @PromptServer.instance.routes.get("/comfy_0DAYE/save_image/prefix_state")
 async def _sim_prefix_state_get(request):
@@ -568,6 +624,7 @@ NODE_CLASS_MAPPINGS = {
     "TextCacheWithHistory": TextCacheWithHistory,
     "SaveImageMetadata": SaveImageMetadata,
     "0DAYE_ImageCompare": ImageCompare,
+    "0DAYE_ImageCachePreview": ImageCachePreview,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     # 英文基准（ComfyUI 官方 i18n 约定）；中文显示名由 locales/zh/nodeDefs.json 提供
@@ -575,4 +632,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TextCacheWithHistory": "Text Cache",
     "SaveImageMetadata": "Save Image Metadata",
     "0DAYE_ImageCompare": "Image Compare",
+    "0DAYE_ImageCachePreview": "Image Cache Preview",
 }

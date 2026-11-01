@@ -8,5 +8,6 @@
 | [文本缓存](https://github.com/ooUwUoo/comfy-0DAYE/blob/main/docs/text_cache.zh-CN.md) | 接住上游 LLM 输出文本：固定好结果、手动覆盖、LoRA 触发词前缀拼接、每节点独立 50 条历史（持久化保存、重启保留），节点内面板可直接复制/回填/一键清空。 |
 | [保存图像元数据](https://github.com/ooUwUoo/comfy-0DAYE/blob/main/docs/save_image_metadata.zh-CN.md) | 保存主 PNG 及可选附带 JPEG/WEBP（最多两种格式、无预览窗口），写入 CivitAI 可识别的 A1111 元数据：自动追溯提示词/采样参数/模型/LoRA，模型哈希经 `.sha256` 边车缓存；参数串/LoRA/工作流嵌入/独立工作流 JSON/脱敏各开关，支持原生 ComfyUI 模式、JPEG/WEBP 画质控制、文件名占位符与节点 ID / 手动覆盖兜底。 |
 | [图像对比](https://github.com/ooUwUoo/comfy-0DAYE/blob/main/docs/image_compare.zh-CN.md) | 节点内 A/B 图像对比预览：划线跟随（默认）、按住点击、透明度混合，接任意一个输入即可预览；右键复制 A/B 到剪贴板或**保存为原始分辨率 PNG（含工作流元数据）**。预览图 GPU 下采样防卡顿，输出 `image_a` 原样透传与 `concat` 左右拼接图。 |
+| [图像缓存预览](https://github.com/ooUwUoo/comfy-0DAYE/blob/main/docs/image_cache.zh-CN.md) | 原生预览 + 历史回看：每张流经的图自动留档，大图下方缩略图条可翻页（每页张数随节点宽度自适应），点小图切大图，配最新/最旧页、上一张/下一张、清空按钮；新图默认显示最新。两级容量：每节点 50 条索引 + 全局 300 组图片池（LRU 淘汰），磁盘占用不随节点数增长。`image` 原样透传。 |
 
 [← 返回仓库首页](../README.zh-CN.md)
