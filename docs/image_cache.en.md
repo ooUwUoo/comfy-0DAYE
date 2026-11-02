@@ -55,20 +55,22 @@ The node is registered as an output node: **it runs and records even when its ou
 
 Right-click the **main preview** or **any thumbnail** for the same actions as the native preview node (applied to the image under the cursor):
 
-| Item | Full mode (default) | Lightweight mode |
+| Item | Original available (either mode) | Original expired |
 |---|---|---|
 | Open Image | Open the **original** (full-resolution PNG) in a new tab | Open the 1024px preview |
 | Copy Image | Copy the **original** to the clipboard | Copy the preview |
-| Save Image | Download the **original PNG with prompt/workflow metadata embedded (drag back into ComfyUI to restore the workflow)** | Download the 1024px preview |
+| Save PNG Original | Download the **original PNG with prompt/workflow metadata embedded (drag back into ComfyUI to restore the workflow)** | — (falls back to "Save Image" for the preview) |
+| Save JPG | **Transcode the original to JPG on the fly** (quality 95, CivitAI parameter string in EXIF) | — (same fallback) |
+| Reveal in Explorer | Locate and select the cache file in the file manager (prefers the original, falls back to the preview) | Same |
 
-**Saved images are CivitAI-readable in both modes**: every cached preview file embeds an A1111-format parameter string (positive/negative prompts, Steps/Sampler/CFG/Seed/size/model/LoRA hashes) — via EXIF UserComment for JPEG and the tEXt `parameters` block for PNG, which are exactly CivitAI's reading points. The full-mode original PNG additionally carries prompt/workflow for workflow restore.
+**Saved images are CivitAI-readable in both formats**: the PNG original uses the tEXt `parameters` block, the JPG uses EXIF UserComment — both carry the A1111-format parameter string (positive/negative prompts, Steps/Sampler/CFG/Seed/size/model/LoRA hashes), exactly CivitAI's reading points. The PNG original additionally carries prompt/workflow for workflow restore.
 
 ## Full / lightweight mode
 
 The node has an advanced option **store_full_image** (default on):
 
-- **On (full mode)**: each group also stores a full-resolution PNG; right-click save gives the original with metadata; ~1–4 MB per group
-- **Off (lightweight)**: only the 1024px preview is stored (still carrying the CivitAI parameter string); right-click save falls back to the preview; ~tens of KB per group — good when you only want quick lookback without archiving originals
+- **On (full mode)**: each group also stores a full-resolution PNG permanently under `user/0DAYE/`; right-click save gives the original with metadata; ~1–4 MB per group
+- **Off (lightweight)**: only the 1024px preview is kept in `user/0DAYE/` (still carrying the CivitAI parameter string), ~tens of KB per group; **the full-resolution original goes to ComfyUI's official `temp/` directory** — within the current session you can still right-click to save the PNG original or a JPG (transcoded on the fly), and **it is wiped automatically by ComfyUI on startup and shutdown**. After a restart those history entries can only save the preview. Ideal when you want originals on demand without long-term disk cost
 
 ## Capacity & disk usage
 
@@ -81,9 +83,9 @@ Two-level capacity; disk usage is independent of node count and workflow count:
 
 So no matter how many preview nodes or saved workflows you have, the cache directory holds at most 300 groups.
 
-- Full mode: three files per group — large image capped at **1024px** (in-node display), thumbnail at **160px**, and a **full-resolution PNG with workflow metadata**; lightweight mode: two files (no full-resolution PNG).
+- Full mode: three files per group — large image capped at **1024px** (in-node display), thumbnail at **160px**, and a **full-resolution PNG with workflow metadata**; lightweight mode keeps only the first two in `user/0DAYE/`, with the full-resolution PNG in the official `temp/` (session-scoped, cleared on restart, not counted here).
 - Large/thumbnail files are JPEG (quality 92) without alpha, PNG with alpha.
-- Rough disk usage: full mode 300 groups ≈ **0.3–1.2 GB** (depends on output resolution); lightweight mode ≈ **20–60 MB**.
+- Rough disk usage: full mode 300 groups ≈ **0.3–1.2 GB** (depends on output resolution); lightweight mode `user/0DAYE/` side ≈ **20–60 MB**, while the `temp/` side accumulates over the session and is released when ComfyUI closes.
 
 ## Storage location
 
@@ -99,9 +101,9 @@ Compared with official directories:
 
 | Directory | Written by | Characteristics |
 |---|---|---|
-| `temp/` | Native preview nodes | Cleared on restart |
+| `temp/` | Native preview nodes; **this node's lightweight-mode originals** (`temp/0DAYE_image_cache/`) | Wiped on ComfyUI startup and shutdown |
 | `output/` | Save nodes | Kept forever, shown in the Assets panel |
-| `user/0DAYE/image_cache/` | **this node** | Survives restarts, not shown in Assets, auto-evicted by the global 300-group cap |
+| `user/0DAYE/image_cache/` | **this node** (previews/thumbnails + full-mode originals) | Survives restarts, not shown in Assets, auto-evicted by the global 300-group cap |
 
 **The Clear button only clears this node's list; it does not delete cached files** — files are a shared global pool that other nodes may still reference, so they are released only by LRU eviction beyond 300 groups.
 

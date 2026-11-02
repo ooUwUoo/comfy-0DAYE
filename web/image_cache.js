@@ -110,6 +110,14 @@ function viewURL(id, kind) {
     : `/comfy_0DAYE/image_cache/view?${q}`;
 }
 
+// 原图下载 URL（fmt=png 直接回传全分辨率 PNG；fmt=jpg 后端即时转码，含 CivitAI 参数串）
+function downloadURL(id, fmt) {
+  const q = `id=${encodeURIComponent(id)}&fmt=${fmt}`;
+  return app.api?.apiURL
+    ? app.api.apiURL(`/comfy_0DAYE/image_cache/download?${q}`)
+    : `/comfy_0DAYE/image_cache/download?${q}`;
+}
+
 // —— 构建面板 DOM ——
 function makeDom() {
   ensureStyle();
@@ -358,44 +366,59 @@ function flashInfo(p, msg) {
   setTimeout(() => el.remove(), 1600);
 }
 
+// 原图是否可用：f=完整模式永久原图；tf=轻量模式会话级临时原图（官方 temp，重启即清）
+function hasFull(it) {
+  return !!(it.f || it.tf);
+}
+
 function openImage(it) {
-  // f=1 → 全分辨率原图 PNG；轻量模式无 → 1024px 预览图
-  window.open(viewURL(it.id, it.f ? "full" : "preview"), "_blank");
+  // f/tf → 全分辨率原图 PNG；否则 1024px 预览图
+  window.open(viewURL(it.id, hasFull(it) ? "full" : "preview"), "_blank");
 }
 async function copyImage(p, it) {
   try {
-    // 优先原图像素；轻量模式降级为预览图（剪贴板本身不携带 PNG 元数据）
-    const png = await toPngBlob(await fetchBlob(it.id, it.f ? "full" : "preview"));
+    // 优先原图像素；无原图降级为预览图（剪贴板本身不携带 PNG 元数据）
+    const png = await toPngBlob(await fetchBlob(it.id, hasFull(it) ? "full" : "preview"));
     await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
-    flashInfo(p, it.f ? "已复制原图到剪贴板" : "已复制预览图（轻量模式）");
+    flashInfo(p, hasFull(it) ? "已复制原图到剪贴板" : "已复制预览图");
   } catch (e) {
     alert(`复制失败：${e.message}`);
   }
 }
-async function saveImage(p, it) {
+// fmt: png=全分辨率原图（含工作流元数据）/ jpg=原图即时转码（含 CivitAI 参数串）/
+//      preview=预览图兜底（原图已失效时，如重启后轻量模式历史）
+async function saveImage(p, it, fmt) {
   try {
-    // full = 全分辨率 PNG（内嵌 prompt/workflow 元数据，拖回 ComfyUI 可恢复工作流）；
-    // 轻量模式无 full → 保存 1024px 预览图（同样内嵌 CivitAI 参数串，C 站可读）
-    const kind = it.f ? "full" : "preview";
-    const blob = await fetchBlob(it.id, kind);
+    let blob, ext, msg;
+    if (fmt === "preview") {
+      blob = await fetchBlob(it.id, "preview");
+      ext = blob.type === "image/png" ? "png" : "jpg";
+      msg = "已保存预览图（含 CivitAI 参数）";
+    } else {
+      const r = await fetch(downloadURL(it.id, fmt));
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      blob = await r.blob();
+      ext = fmt;
+      msg = fmt === "png" ? "已保存 PNG 原图（含工作流元数据）" : "已保存 JPG（含 CivitAI 参数串）";
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `0DAYE_cache_${it.id}.${blob.type === "image/png" ? "png" : "jpg"}`;
+    a.download = `0DAYE_cache_${it.id}.${ext}`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 3000);
-    flashInfo(p, it.f ? "已保存原图（含工作流元数据）" : "已保存预览图（轻量模式，含 CivitAI 参数）");
+    flashInfo(p, msg);
   } catch (e) {
     alert(`保存失败：${e.message}`);
   }
 }
-// 打开文件管理器并定位选中该缓存文件（优先全分辨率原图，轻量模式降级为预览图）
+// 打开文件管理器并定位选中该缓存文件（优先全分辨率原图，无则降级为预览图）
 async function revealImage(it) {
   try {
     const r = await app.api.fetchApi("/comfy_0DAYE/image_cache/reveal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: it.id, kind: it.f ? "full" : "preview" }),
+      body: JSON.stringify({ id: it.id, kind: hasFull(it) ? "full" : "preview" }),
     });
     if (!r.ok) throw new Error(String(r.status));
   } catch (e) {
@@ -423,7 +446,14 @@ function openContextMenu(p, ev, it) {
   };
   addItem("打开图像", () => openImage(it));
   addItem("复制图像", () => copyImage(p, it));
-  addItem("保存图像", () => saveImage(p, it));
+  if (hasFull(it)) {
+    // 任意模式有原图（完整=永久 _f；轻量=temp 临时原图）→ 两种格式都可存
+    addItem("保存 PNG 原图", () => saveImage(p, it, "png"));
+    addItem("保存 JPG", () => saveImage(p, it, "jpg"));
+  } else {
+    // 原图已失效（如重启后轻量模式历史，temp 被官方清空）→ 降级存预览图
+    addItem("保存图像", () => saveImage(p, it, "preview"));
+  }
   addItem("打开图片路径", () => revealImage(it));
   document.body.appendChild(menu);
   ctxMenuEl = menu;

@@ -26,14 +26,24 @@
                                  parameters 块），轻量模式下右键保存的就是它，C 站照样可读
   image_cache/{gid}_t.{png|jpg}  小图，长边 > THUMB_MAX_SIDE 时等比缩小（缩略图条用；不嵌元数据）
   image_cache/{gid}_f.png        全分辨率 PNG，内嵌 prompt/workflow/CivitAI 参数串
-                                 （store_full_image=完整模式才存；右键「保存图像」用，
-                                 可拖回 ComfyUI 恢复工作流；轻量模式无此文件，info 无 "f" 标记）
-  image_cache_history.json       {"groups": {gid: {w,h,e,f?}}, "drawers": {key: [gid...]}}
+                                 （store_full_image=完整模式才存；右键「保存 PNG 原图」用，
+                                 可拖回 ComfyUI 恢复工作流，info 带 "f" 标记）
+  image_cache_history.json       {"groups": {gid: {w,h,e,f?,tf?}}, "drawers": {key: [gid...]}}
   大图/小图编码按有无 alpha 分流：RGBA 存 PNG（保留透明），RGB 存 JPEG q92
   （节点内显示用，体积省 4/5）；全分辨率文件恒为 PNG（需嵌 tEXt 元数据）。
-  磁盘仍由 POOL_MAX 硬顶控制；完整模式下全分辨率 PNG 是单组体积大头（用户明确要求右键存原图），
-  轻量模式单组降到几十 KB。参数串生成复用 save_image_metadata 的 _extract_info+build_parameters
+  磁盘仍由 POOL_MAX 硬顶控制；完整模式下全分辨率 PNG 是单组体积大头（用户明确要求右键存原图）。
+  参数串生成复用 save_image_metadata 的 _extract_info+build_parameters
   （自动追溯上游采样器/提示词/模型/LoRA 哈希），失败仅告警不阻断缓存。
+
+轻量模式的会话级临时原图（2026-11-03，用户批准的 temp 复用方案）：
+  轻量模式（store_full_image=False）不再丢弃原图，而是把全分辨率 PNG（同样内嵌
+  prompt/workflow/参数串）写到 ComfyUI 官方 temp 目录下的插件子目录
+  temp/0DAYE_image_cache/{gid}_f.png，索引带 "tf" 标记。回收完全交给官方机制——
+  app/assets/lifecycle.py 的 cleanup_temp_filesystem 在启动与关闭时都会 rmtree 整个
+  temp 目录，无需自建 TTL/清理器。效果：任意模式下右键都能「保存 PNG 原图 / 保存 JPG」
+  （JPG 由原图即时转码，EXIF UserComment 嵌参数串）；重启后临时原图被官方清空，
+  tf 标记随索引校验自然消失，菜单自动降级为只存预览图。代价：重启即失效（启动也清），
+  且跑图期间 temp 持续累积到关闭才释放（用户已知情接受）。
 
 前端消费（web/image_cache.js）：
   execute 的 ui.items = [{id, w, h, f?}, ...]（当前抽屉全量，最新在前）驱动面板刷新；
@@ -47,13 +57,14 @@ import random
 import re
 import threading
 import time
+from io import BytesIO
 
 import numpy as np
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 import folder_paths
-from cli_args import args
+from comfy.cli_args import args  # 新版 ComfyUI 顶层无 cli_args 模块（与 save_image_metadata 一致）
 from comfy_api.latest import io
 
 # 复用保存元数据节点的 CivitAI 参数串管线（同包模块；测试环境无包上下文时回退绝对导入）
@@ -72,6 +83,10 @@ JPEG_QUALITY = 92
 USER_DATA_DIR = os.path.join(folder_paths.base_path, "user", "0DAYE")
 CACHE_DIR = os.path.join(USER_DATA_DIR, "image_cache")
 _INDEX_FILE = os.path.join(USER_DATA_DIR, "image_cache_history.json")
+
+# 轻量模式的会话级临时原图目录：ComfyUI 官方 temp 下的插件子目录。
+# 启动/关闭时官方 cleanup_temp_filesystem 会 rmtree 整个 temp（见文件头注释），回收零代码。
+TEMP_CACHE_DIR = os.path.join(folder_paths.get_temp_directory(), "0DAYE_image_cache")
 
 # gid = 毫秒时间戳 + 随机数，前端直接用来拼 URL；只允许字母数字下划线（防路径穿越）
 _VALID_GID = re.compile(r"^[0-9A-Za-z_]+$")
@@ -110,6 +125,9 @@ def _load_index():
             groups[gid] = {"w": w, "h": h, "e": e}
             if os.path.isfile(_group_path(gid, e, "full")):
                 groups[gid]["f"] = 1
+            elif os.path.isfile(_temp_full_path(gid)):
+                # 轻量模式的临时原图：仅当文件还在（本会话未重启）才恢复 tf 标记
+                groups[gid]["tf"] = 1
 
     drawers = {}
     raw_drawers = raw.get("drawers")
@@ -133,6 +151,11 @@ def _group_path(gid, ext, kind):
     suffix = {"preview": "_p", "thumb": "_t", "full": "_f"}[kind]
     ext = "png" if kind == "full" else ext  # 全分辨率文件恒为 PNG（需嵌 tEXt 元数据）
     return os.path.join(CACHE_DIR, f"{gid}{suffix}.{ext}")
+
+
+def _temp_full_path(gid):
+    """轻量模式的会话级临时原图（官方 temp 目录，启动/关闭自动清空）。"""
+    return os.path.join(TEMP_CACHE_DIR, f"{gid}_f.png")
 
 
 # 模块级索引：启动时从磁盘恢复，每次新增/清空落盘
@@ -220,8 +243,9 @@ def _save_group(t, prompt=None, extra_pnginfo=None, parameters=None, store_full=
     """单张图落盘为一组文件，返回 (gid, info)；失败返回 (None, None)。
     {gid}_p: 大图（≤1024，节点内显示；嵌 CivitAI 参数串——JPG 走 EXIF UserComment / PNG 走 tEXt）
     {gid}_t: 小图（≤160，缩略图条；不嵌元数据）
-    {gid}_f: 全分辨率 PNG 带工作流元数据（store_full=True 才存；右键「保存图像」用，可拖回恢复）
-    info 带 "f"=1 标记表示本组有全分辨率文件（轻量模式下没有，前端保存时降级用预览图）。"""
+    {gid}_f: 全分辨率 PNG 带工作流元数据（store_full=True 存到 image_cache/ 永久保留，info 带 "f"）；
+             store_full=False（轻量模式）存到官方 temp 子目录（会话级，重启即清，info 带 "tf"）。
+             两者右键都能「保存 PNG 原图 / 保存 JPG」。"""
     try:
         pil = _to_pil(t)
         orig_w, orig_h = pil.size
@@ -246,11 +270,20 @@ def _save_group(t, prompt=None, extra_pnginfo=None, parameters=None, store_full=
             prev.save(_group_path(gid, ext, "preview"), "JPEG", **kw)
             thumb.save(_group_path(gid, ext, "thumb"), "JPEG", quality=JPEG_QUALITY)
         info = {"w": orig_w, "h": orig_h, "e": ext}
+        pnginfo = PngInfo()
+        _png_metadata(pnginfo, prompt, extra_pnginfo, parameters)
         if store_full:
-            pnginfo = PngInfo()
-            _png_metadata(pnginfo, prompt, extra_pnginfo, parameters)
             pil.save(_group_path(gid, ext, "full"), "PNG", pnginfo=pnginfo)
             info["f"] = 1
+        else:
+            # 轻量模式：全分辨率原图写官方 temp 子目录（启动/关闭自动清空，回收零代码）。
+            # 失败仅告警：预览缓存已落盘，不因此整组失败
+            try:
+                os.makedirs(TEMP_CACHE_DIR, exist_ok=True)
+                pil.save(_temp_full_path(gid), "PNG", pnginfo=pnginfo)
+                info["tf"] = 1
+            except OSError as te:
+                print(f"[ImageCache] 警告：临时原图写入失败（不影响预览缓存）：{te}")
         return gid, info
     except Exception as e:
         print(f"[ImageCache] 警告：图片缓存落盘失败：{e}")
@@ -258,7 +291,8 @@ def _save_group(t, prompt=None, extra_pnginfo=None, parameters=None, store_full=
 
 
 def _drop_group(gid):
-    """淘汰一组：删三个文件 + 摘除所有抽屉里的引用（调用方须持 _LOCK）。"""
+    """淘汰一组：删全部文件（大图/小图/永久原图/临时原图）+ 摘除所有抽屉里的引用
+    （调用方须持 _LOCK）。"""
     info = _INDEX["groups"].pop(gid, None)
     if not info:
         return
@@ -267,6 +301,10 @@ def _drop_group(gid):
             os.remove(_group_path(gid, info.get("e", "jpg"), kind))
         except OSError:
             pass
+    try:
+        os.remove(_temp_full_path(gid))
+    except OSError:
+        pass
     for arr in _INDEX["drawers"].values():
         while gid in arr:
             arr.remove(gid)
@@ -281,7 +319,8 @@ def _prune_pool():
 
 def drawer_items(key):
     """只读：某抽屉的条目清单（最新在前），供前端面板在加载工作流/重启后恢复显示。
-    条目 {id, w, h, f}——f=1 表示有全分辨率文件（右键保存原图），无则保存降级用预览图。"""
+    条目 {id, w, h, f?, tf?}——f=1 有永久全分辨率文件；tf=1 有会话级临时原图（轻量模式）。
+    tf 实时校验文件是否还在（temp 目录可能被系统/用户清理），不在则不下发该标记。"""
     key = _norm_key(key)
     with _LOCK:
         ids = _INDEX["drawers"].get(key) or []
@@ -292,6 +331,8 @@ def drawer_items(key):
                 it = {"id": gid, "w": info["w"], "h": info["h"]}
                 if info.get("f"):
                     it["f"] = 1
+                elif info.get("tf") and os.path.isfile(_temp_full_path(gid)):
+                    it["tf"] = 1
                 out.append(it)
         return out
 
@@ -308,8 +349,9 @@ def clear_drawer(key):
 
 
 def group_file(gid, kind):
-    """只读：取某组的文件绝对路径（不存在/非法 gid 返回 None），供 view 路由用。
-    kind: preview（默认）/ thumb / full（全分辨率 PNG，右键保存用）。"""
+    """只读：取某组的文件绝对路径（不存在/非法 gid 返回 None），供 view/download/reveal 路由用。
+    kind: preview（默认）/ thumb / full（全分辨率 PNG，右键保存用——完整模式取永久 _f，
+    轻量模式回退取官方 temp 里的会话级临时原图）。"""
     if not isinstance(gid, str) or not _VALID_GID.match(gid):
         return None
     if kind not in ("preview", "thumb", "full"):
@@ -319,7 +361,37 @@ def group_file(gid, kind):
         if not info:
             return None
         path = _group_path(gid, info.get("e", "jpg"), kind)
-    return path if os.path.isfile(path) else None
+    if os.path.isfile(path):
+        return path
+    if kind == "full":
+        path = _temp_full_path(gid)
+        return path if os.path.isfile(path) else None
+    return None
+
+
+def full_to_jpg(gid, quality=95):
+    """把某组的全分辨率 PNG（完整模式 _f 或轻量模式 temp 临时原图）即时转码为 JPG 字节流
+    （不落盘、无额外缓存）。参数串从 PNG tEXt 取出并嵌进 EXIF UserComment（CivitAI 读取点，
+    与保存元数据节点同约定）；alpha 通道随 convert("RGB") 自然丢弃（JPEG 不支持透明）。
+    返回 bytes；图组不存在/无原图/转码失败返回 None。"""
+    path = group_file(gid, "full")
+    if not path:
+        return None
+    try:
+        with Image.open(path) as im:
+            params = (getattr(im, "text", None) or {}).get("parameters") \
+                or im.info.get("parameters") or ""
+            pil = im.convert("RGB")  # convert 恒返回副本，with 块关闭后仍可用
+        buf = BytesIO()
+        exif = _jpeg_exif(params)
+        kw = {"quality": quality}
+        if exif is not None:
+            kw["exif"] = exif
+        pil.save(buf, "JPEG", **kw)
+        return buf.getvalue()
+    except Exception as e:
+        print(f"[ImageCache] 警告：原图转 JPG 失败：{e}")
+        return None
 
 
 def _win_reveal(path):
@@ -428,8 +500,8 @@ class ImageCachePreview(io.ComfyNode):
                     advanced=True,
                     tooltip=(
                         "完整模式（默认开）：每组多存一份全分辨率 PNG（内嵌 prompt/workflow/"
-                        "CivitAI 参数串），右键保存得到原图带数据；关闭=轻量模式：只存 1024px "
-                        "预览图（也带 CivitAI 参数串），右键保存退化为预览图，单组体积降到几十 KB"
+                        "CivitAI 参数串）到 user/0DAYE 永久保留；关闭=轻量模式：原图改存 "
+                        "ComfyUI temp 目录（重启自动清空），两种模式右键都能存 PNG 原图或 JPG"
                     ),
                 ),
             ],

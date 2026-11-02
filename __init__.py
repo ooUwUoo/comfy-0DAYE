@@ -26,6 +26,7 @@ from .image_cache_preview import (
     ImageCachePreview,
     clear_drawer as _image_cache_clear_drawer,
     drawer_items as _image_cache_drawer_items,
+    full_to_jpg as _image_cache_full_to_jpg,
     group_file as _image_cache_group_file,
     reveal_group as _image_cache_reveal_group,
 )
@@ -584,6 +585,30 @@ async def _image_cache_view_route(request):
     resp = web.FileResponse(path)
     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return resp
+
+
+# 图像缓存预览：原图下载（右键「保存 PNG 原图 / 保存 JPG」）。
+# fmt=png 直接回传全分辨率 PNG（完整模式 _f 或轻量模式 temp 临时原图，含工作流元数据，
+# 可拖回恢复工作流）；fmt=jpg 由全分辨率 PNG 即时转码（不落盘），EXIF UserComment 嵌参数串。
+# Content-Disposition=attachment 强制浏览器走下载而非页内打开。
+@PromptServer.instance.routes.get("/comfy_0DAYE/image_cache/download")
+async def _image_cache_download_route(request):
+    gid = request.query.get("id", "")
+    # gid 合法性由 group_file/full_to_jpg 内部校验；这里再净化一次用于文件名（防引号破坏 header）
+    safe_gid = re.sub(r"[^0-9A-Za-z_-]", "", gid)[:64] or "image"
+    if request.query.get("fmt", "png") == "jpg":
+        data = _image_cache_full_to_jpg(gid)
+        if data is None:
+            raise web.HTTPNotFound()
+        return web.Response(
+            body=data, content_type="image/jpeg",
+            headers={"Content-Disposition": f'attachment; filename="0DAYE_cache_{safe_gid}.jpg"'})
+    path = _image_cache_group_file(gid, "full")
+    if not path:
+        raise web.HTTPNotFound()
+    return web.FileResponse(
+        path,
+        headers={"Content-Disposition": f'attachment; filename="0DAYE_cache_{safe_gid}.png"'})
 
 
 # 图像缓存预览：在系统文件管理器中定位并选中缓存图片（右键菜单「打开图片路径」）
