@@ -55,6 +55,8 @@ Menu items for an image that has not been produced yet are omitted; after a swap
 
 Preview images sent to the frontend are automatically **GPU bicubic-downsampled (only when the long side exceeds 2048) and encoded as lossless PNG**, delivered via the official temp-preview channel (auto-cleaned on restart) — cutting websocket transfer and browser decode cost by an order of magnitude for large images. **The downsampling only affects the panel display and clipboard copy**; right-click "Save image" writes a separate **full-resolution** PNG (with workflow metadata); both output ports always carry the full original-resolution tensors.
 
+**Session-level dedup (2026-11-04)**: preview and full-resolution PNGs in `temp/` are encoded and written **once per session**, keyed by pixel content plus the workflow — when the same image passes through ImageCachePreview (lightweight mode) and this node, only one file is kept, and a fixed B image reused across runs is written only once (every later run just reuses it). File names and directories stay exactly as before, so the frontend is unaffected. The parameter string is deliberately excluded from the dedup key, which means a reused file may carry the snapshot from when it was first written. Full-resolution PNGs keep their alpha channel.
+
 ## Info line
 
 The line below the preview shows each image's **original resolution** (e.g. `A: 1024×1536   B: 1024×1536`), independent of preview scaling.

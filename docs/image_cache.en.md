@@ -70,7 +70,7 @@ Right-click the **main preview** or **any thumbnail** for the same actions as th
 The node has an advanced option **store_full_image** (default on):
 
 - **On (full mode)**: each group also stores a full-resolution PNG permanently under `user/0DAYE/`; right-click save gives the original with metadata; ~1–4 MB per group
-- **Off (lightweight)**: only the 1024px preview is kept in `user/0DAYE/` (still carrying the CivitAI parameter string), ~tens of KB per group; **the full-resolution original goes to ComfyUI's official `temp/` directory** — within the current session you can still right-click to save the PNG original or a JPG (transcoded on the fly), and **it is wiped automatically by ComfyUI on startup and shutdown**. After a restart those history entries can only save the preview. Ideal when you want originals on demand without long-term disk cost
+- **Off (lightweight)**: only the 1024px preview is kept in `user/0DAYE/` (still carrying the CivitAI parameter string), ~tens of KB per group; **the full-resolution original goes to ComfyUI's official `temp/` directory** — within the current session you can still right-click to save the PNG original or a JPG (transcoded on the fly), and **it is wiped automatically by ComfyUI on startup and shutdown**. After a restart those history entries can only save the preview. Ideal when you want originals on demand without long-term disk cost. **Within a session each distinct image is written only once**: the lightweight original shares one dedup index with the ImageCompare node, so the same image passing through both nodes, or a fixed image run repeatedly, never occupies `temp/` twice.
 
 ## Capacity & disk usage
 
@@ -83,7 +83,7 @@ Two-level capacity; disk usage is independent of node count and workflow count:
 
 So no matter how many preview nodes or saved workflows you have, the cache directory holds at most 300 groups.
 
-- Full mode: three files per group — large image capped at **1024px** (in-node display), thumbnail at **160px**, and a **full-resolution PNG with workflow metadata**; lightweight mode keeps only the first two in `user/0DAYE/`, with the full-resolution PNG in the official `temp/` (session-scoped, cleared on restart, not counted here).
+- Full mode: three files per group — large image capped at **1024px** (in-node display), thumbnail at **160px**, and a **full-resolution PNG with workflow metadata**; lightweight mode keeps only the first two in `user/0DAYE/`, with the full-resolution PNG in the official `temp/` (session-scoped, cleared on restart, not counted here; deduplicated within the session, possibly sharing one file with ImageCompare).
 - Large/thumbnail files are JPEG (quality 92) without alpha, PNG with alpha.
 - Rough disk usage: full mode 300 groups ≈ **0.3–1.2 GB** (depends on output resolution); lightweight mode `user/0DAYE/` side ≈ **20–60 MB**, while the `temp/` side accumulates over the session and is released when ComfyUI closes.
 
@@ -101,7 +101,7 @@ Compared with official directories:
 
 | Directory | Written by | Characteristics |
 |---|---|---|
-| `temp/` | Native preview nodes; **this node's lightweight-mode originals** (`temp/0DAYE_image_cache/`) | Wiped on ComfyUI startup and shutdown |
+| `temp/` | Native preview nodes; **this node's lightweight-mode originals** (`temp/0DAYE_image_cache/`, deduplicated within the session — may reuse a file already written by ImageCompare) | Wiped on ComfyUI startup and shutdown |
 | `output/` | Save nodes | Kept forever, shown in the Assets panel |
 | `user/0DAYE/image_cache/` | **this node** (previews/thumbnails + full-mode originals) | Survives restarts, not shown in Assets, auto-evicted by the global 300-group cap |
 
