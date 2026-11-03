@@ -26,7 +26,7 @@ const PREFIX_STATE_URL = "/comfy_0DAYE/save_image/prefix_state";
 const PREFIX_DEFAULT_VALUE = "ComfyUI_Meta"; // 后端 filename_prefix 默认值（自动填入时的判定基准）
 const PLACEHOLDER_CHIPS = [
     "%seed%", "%steps%", "%cfg%", "%sampler%", "%scheduler%", "%denoise%",
-    "%model%", "%width%", "%height%", "%prompt%", "%date:yyyy-MM-dd%", "%batch_num%",
+    "%model%", "%model40%", "%width%", "%height%", "%prompt%", "%date:yyyy-MM-dd%", "%batch_num%",
 ];
 
 // —— ④ advanced 折叠兜底（与 history_panel.js 同款机制，实测踩坑勿删）——

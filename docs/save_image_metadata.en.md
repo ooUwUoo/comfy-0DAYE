@@ -11,7 +11,7 @@ Saves a main PNG plus an optional sidecar JPEG/WEBP (at most two formats, **no p
 | Input | Description |
 |---|---|
 | `images` | Images to save (passthrough) |
-| `filename_prefix` | Filename prefix. Supports the official `%date%` / `%batch_num%` placeholders plus `%seed% %steps% %cfg% %sampler% %scheduler% %denoise% %model% %width% %height% %prompt%`. Invalid characters become `-`, missing values become `unknown` |
+| `filename_prefix` | Filename prefix. Supports the official `%date%` / `%batch_num%` placeholders plus `%seed% %steps% %cfg% %sampler% %scheduler% %denoise% %model% %width% %height% %prompt%`, and percentage truncation forms such as `%model20%` (first 20% of the model name's length; `%prompt15%` / `%sampler12%` / `%scheduler8%` likewise; any value 0–100, decimals allowed). Invalid characters become `-`, missing values become `unknown` |
 | `save_png` | Write the main PNG (default on) |
 | `extra_format` | Sidecar format: `不保存` (none) / `JPEG` / `WEBP` (default JPEG) — at most two formats total |
 | `mode` | `CivitAI 元数据` (CivitAI metadata, default) / `原生 ComfyUI` (native ComfyUI) — see below |
@@ -70,7 +70,7 @@ Fully static — reads the hidden prompt graph, never triggers execution.
 ## Prefix Helper (front-end panel below `filename_prefix`)
 
 - **One-click dropdown**: "最近使用" (recent, 5 entries recorded automatically after each actual run) + "我的模板" (my templates — click 「存」 to store the current prefix as a template; select a template and click 「删」 to remove it).
-- **Placeholder chips**: click to append any of the 12 placeholders (`%seed%` etc.) to the end of the prefix — no need to memorize the rules.
+- **Placeholder chips**: click to append any of the 13 placeholders (`%seed%` etc., including the percentage-truncation example `%model40%`) to the end of the prefix — no need to memorize the rules.
 - **New nodes auto-fill** the most recently used prefix (falls back to `ComfyUI_Meta` when there is no history); loading a workflow always keeps its saved value.
 - Persisted to `ComfyUI/user/0DAYE/save_image_metadata_prefix.json` (survives plugin updates/reinstalls); if the backend route is unavailable the panel degrades to in-memory state and saving itself is unaffected.
 

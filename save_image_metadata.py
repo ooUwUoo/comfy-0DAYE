@@ -653,7 +653,9 @@ def _safe_token(v, default="unknown"):
 def _apply_filename_placeholders(prefix, info):
     """本节点自有占位符（官方另认 %date:...% / %batch_num%），对标参考节点规则：
     %seed% %steps% %cfg% %sampler% %scheduler% %denoise% %model% %width% %height%
-    %prompt%（正面提示词首行，截断 50 字符）。解析不到 → unknown。"""
+    %prompt%（正面提示词首行，默认截断 50 字符）。解析不到 → unknown。
+    百分比截断写法：%<名称><P>% 取前 P% 长度（model/prompt/sampler/scheduler 可用，
+    P 为 0–100 任意数值含小数，如 %model20%、%prompt15%）；p=0 空串、p≥100 全串。"""
     if not isinstance(prefix, str) or "%" not in prefix:
         return prefix
     pos = (info.get("positive") or "").split("\n")[0].strip()
@@ -672,6 +674,47 @@ def _apply_filename_placeholders(prefix, info):
     for k, v in mapping.items():
         if k in prefix:
             prefix = prefix.replace(k, v)
+    # 带百分比后缀的长度截断：%model20% = 模型名称长度的前 20%（同理 %prompt15% %sampler12% %scheduler8%）；
+    # 百分比 0–100 任意数值（含小数），按字符数向下取整且至少 1 个字符；p=0 输出空串、p≥100 取全串；
+    # 值缺失按 unknown 兜底（与基础占位符一致），净化非法字符后再截断。
+    _trunc_bases = {
+        "model": info.get("model_name"),
+        "prompt": pos,
+        "sampler": info.get("sampler_name"),
+        "scheduler": info.get("scheduler"),
+    }
+    for _name, _val in _trunc_bases.items():
+        def _trunc_repl(m, _v=_val):
+            _p = float(m.group(1))
+            if _v is None or (isinstance(_v, str) and not _v.strip()):
+                return "unknown"
+            _s = str(_v).strip()
+            if _p <= 0:
+                return ""
+            if _p >= 100:
+                return _FILENAME_BAD.sub("-", _s)
+            _cut = max(1, int(len(_s) * _p / 100))
+            return _FILENAME_BAD.sub("-", _s[:_cut])
+        prefix = re.sub(r"%" + _name + r"(\d+(?:\.\d+)?)%", _trunc_repl, prefix)
+    # %date:FORMAT% —— 本机核心 folder_paths.compute_vars 不支持该语法，
+    # 在此展开为实际日期（Java 风格 yyyy/yy/MM/dd/HH/hh/mm/ss → strftime），
+    # 并把展开结果里的 Windows 非法字符（尤其是 :）替换为 -，避免 os.makedirs 报 WinError 267。
+    if "%date:" in prefix:
+        import datetime as _dt
+        _now = _dt.datetime.now()
+
+        def _fmt_date(m):
+            fmt = m.group(1)
+            for k, v in (("yyyy", "%Y"), ("yy", "%y"), ("MM", "%m"), ("dd", "%d"),
+                         ("HH", "%H"), ("hh", "%I"), ("mm", "%M"), ("ss", "%S")):
+                fmt = fmt.replace(k, v)
+            try:
+                out = _now.strftime(fmt)
+            except Exception:
+                return m.group(0)
+            return re.sub(r'[\\/:*?"<>|]', "-", out)
+
+        prefix = re.sub(r"%date:([^%]+)%", _fmt_date, prefix)
     return prefix
 
 
@@ -876,7 +919,8 @@ class SaveImageMetadata(io.ComfyNode):
                     "filename_prefix",
                     default="ComfyUI_Meta",
                     tooltip="文件名前缀，可含子目录；占位符：官方 %date:yyyy-MM-dd%、%batch_num%，"
-                            "本节点另支持 %seed% %steps% %cfg% %sampler% %scheduler% %denoise% %model% %width% %height% %prompt%",
+                            "本节点另支持 %seed% %steps% %cfg% %sampler% %scheduler% %denoise% %model% %width% %height% %prompt%，"
+                            "以及百分比截断写法 %model20%（取模型名称前 20% 长度，另支持 %prompt15% %sampler12% %scheduler8%）",
                 ),
                 io.Boolean.Input(
                     "save_png", default=True, label_on="保存", label_off="不存",

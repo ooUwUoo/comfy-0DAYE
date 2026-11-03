@@ -11,7 +11,7 @@
 | 输入 | 说明 |
 |---|---|
 | `images` | 待保存的图像（透传） |
-| `filename_prefix` | 文件名前缀。支持官方 `%date%` / `%batch_num%` 占位符，另加 `%seed% %steps% %cfg% %sampler% %scheduler% %denoise% %model% %width% %height% %prompt%`。非法字符转 `-`，缺值补 `unknown` |
+| `filename_prefix` | 文件名前缀。支持官方 `%date%` / `%batch_num%` 占位符，另加 `%seed% %steps% %cfg% %sampler% %scheduler% %denoise% %model% %width% %height% %prompt%`，并支持百分比截断写法 `%model20%`（取模型名称长度的前 20%，`%prompt15%` / `%sampler12%` / `%scheduler8%` 同理，百分比 0–100 可含小数）。非法字符转 `-`，缺值补 `unknown` |
 | `save_png` | 是否保存主 PNG（默认开） |
 | `extra_format` | 附带格式：`不保存` / `JPEG` / `WEBP`（默认 JPEG），一次最多两种格式 |
 | `mode` | `CivitAI 元数据`（默认）/ `原生 ComfyUI`——见下文 |
@@ -70,7 +70,7 @@
 ## 前缀助手（`filename_prefix` 下方的前端面板）
 
 - **下拉一键写入**：「最近使用」5 条（每次实际执行后自动记录）+「我的模板」（点「存」把当前前缀存为模板；下拉选中某条模板后点「删」移除）。
-- **占位符 chips**：点击即把 `%seed%` 等 12 个占位符追加到前缀末尾，免背规则。
+- **占位符 chips**：点击即把 `%seed%` 等 13 个占位符追加到前缀末尾，免背规则（含百分比截断示例 `%model40%`）。
 - **新建节点自动填入**最近使用的第一条（无历史时保持 `ComfyUI_Meta`）；加载工作流时以保存值为准，不自动填。
 - 数据持久化在 `ComfyUI/user/0DAYE/save_image_metadata_prefix.json`（插件更新/重装不丢）；后端路由不可用时面板退化为内存态，不影响保存功能本身。
 
