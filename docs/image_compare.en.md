@@ -32,8 +32,10 @@ Right-click anywhere on the node (including the preview):
 
 | Menu item | Action |
 |---|---|
+| Open A image | Opens image A's **full-resolution original** in a new tab (with workflow metadata; native browser viewing and zoom) |
 | Copy A to clipboard | Writes image A (preview resolution) to the system clipboard (PNG, paste into WeChat/PS/etc.) |
 | Save A image | Browser-downloads image A: **full-resolution PNG with native SaveImage-style `prompt`/`workflow` metadata — drag it back into ComfyUI to restore the workflow** (archive outputs without a save node) |
+| Open B image | Same, for image B |
 | Copy B to clipboard | Same, for image B |
 | Save B image | Same, for image B (full resolution + metadata) |
 
@@ -55,7 +57,7 @@ Menu items for an image that has not been produced yet are omitted; after a swap
 
 Preview images sent to the frontend are automatically **GPU bicubic-downsampled (only when the long side exceeds 2048) and encoded as lossless PNG**, delivered via the official temp-preview channel (auto-cleaned on restart) — cutting websocket transfer and browser decode cost by an order of magnitude for large images. **The downsampling only affects the panel display and clipboard copy**; right-click "Save image" writes a separate **full-resolution** PNG (with workflow metadata); both output ports always carry the full original-resolution tensors.
 
-**Session-level dedup (2026-11-04)**: preview and full-resolution PNGs in `temp/` are encoded and written **once per session**, keyed by pixel content plus the workflow — when the same image passes through ImageCachePreview (lightweight mode) and this node, only one file is kept, and a fixed B image reused across runs is written only once (every later run just reuses it). File names and directories stay exactly as before, so the frontend is unaffected. The parameter string is deliberately excluded from the dedup key, which means a reused file may carry the snapshot from when it was first written. Full-resolution PNGs keep their alpha channel.
+**Session-level dedup (upgraded to hard links on 2026-11-05)**: preview and full-resolution PNGs in `temp/` are encoded **once per session**, keyed by pixel content plus the workflow — on a hit the file is materialized at this node's own counter-based name as an NTFS hard link (**file names unchanged, one physical copy on disk**; falls back to a normal write if linking fails). The same image passing through ImageCachePreview (lightweight/full mode) and this node occupies disk only once, and a fixed B image across runs stays at one copy — **hits even under random seeds** (the dedup fingerprint uses only the workflow structure, not the per-run API prompt). The parameter string is deliberately excluded from the dedup key, so a reused file may carry the snapshot from its first write. Full-resolution PNGs keep their alpha channel.
 
 ## Info line
 

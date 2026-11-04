@@ -316,6 +316,11 @@ async function saveImage(node, item, tag) {
   }
 }
 
+function openImage(item) {
+  // 新标签页打开全分辨率原图（与「保存」同源：full 缺失时=预览文件本身即全分辨率）
+  window.open(viewURL(item.full || item), "_blank");
+}
+
 // —— 面板内自定义右键菜单（DOM 层，双引擎通用）——
 // DOM widget 覆盖层会把右键事件吃掉，画布级 getExtraMenuOptions 在图像区不触发
 //（小珠光图像画在 canvas 上所以能弹，本节点是 DOM 架构，走不了那条路）→ 面板上自制浮层菜单。
@@ -358,10 +363,12 @@ function openContextMenu(node, ev) {
     s.className = "od-cmp-ctx-sep";
     menu.appendChild(s);
   };
+  addItem("打开 A 图像", () => openImage(a));
   addItem("复制 A 到剪贴板", () => copyImage(node, a, "A"));
   addItem("保存 A 图片", () => saveImage(node, a, "A"));
   if (b) {
     addSep();
+    addItem("打开 B 图像", () => openImage(b));
     addItem("复制 B 到剪贴板", () => copyImage(node, b, "B"));
     addItem("保存 B 图片", () => saveImage(node, b, "B"));
   }
@@ -438,7 +445,7 @@ app.registerExtension({
     };
 
     // 右键菜单（节点级官方 API，非画布猴子补丁；在预览图上右键同样命中本节点菜单）：
-    // A/B 分别「复制到剪贴板」+「保存图片」，未执行的图不出现对应项
+    // A/B 分别「打开图像」+「复制到剪贴板」+「保存图片」，未执行的图不出现对应项
     nodeType.prototype.getExtraMenuOptions = function (_, options) {
       const st = this._odCmp?.state;
       if (!st?.images) return;
@@ -447,12 +454,14 @@ app.registerExtension({
       const b = st.swapped ? st.images.a : st.images.b;
       if (a) {
         items.push(
+          { content: "打开 A 图像", callback: () => openImage(a) },
           { content: "复制 A 到剪贴板", callback: () => copyImage(this, a, "A") },
           { content: "保存 A 图片", callback: () => saveImage(this, a, "A") },
         );
       }
       if (b) {
         items.push(
+          { content: "打开 B 图像", callback: () => openImage(b) },
           { content: "复制 B 到剪贴板", callback: () => copyImage(this, b, "B") },
           { content: "保存 B 图片", callback: () => saveImage(this, b, "B") },
         );
