@@ -15,9 +15,15 @@
 
 双文件策略（防卡顿与原档保存两全，2026-10-18）：
   每张图每次执行写两份 PNG——预览文件（下采样、面板显示+复制剪贴板用）与
-  全分辨率文件（含官方 SaveImage 同款 prompt/workflow 元数据，右键「保存」下载用，
-  可直接拖回 ComfyUI 恢复工作流）；未触发下采样时两用途共用同一文件。
+  全分辨率文件（含官方 SaveImage 同款 prompt/workflow/参数串元数据，右键「保存」
+  下载用，可直接拖回 ComfyUI 恢复工作流）；未触发下采样时两用途共用同一文件。
   接收 A/B 两图均可选（只接一个端口也能预览），一个都没接执行报错。
+
+内容寻址去重（2026-11-05 起硬链接版）：
+  两类文件均经 shared_temp_store 落盘——同像素 + 同 workflow 本会话内只编码一次，
+  命中时以 NTFS 硬链接落到自己的计数命名路径（零拷贝、命名不变、磁盘只占一份）；
+  与 ImageCachePreview（轻量/完整模式）共享同一份索引，同一张图跨节点不再重复存盘。
+  典型收益：固定 B 图跑 N 次只占 1 份；A 图与缓存节点原图同像素时只占 1 份。
 
 ui 数据约定（前端 image_compare.js 消费）：
   ui.a_images / ui.b_images 各一项：{filename, subfolder, type:"temp",
@@ -38,7 +44,8 @@ import folder_paths
 from comfy.cli_args import args
 from comfy_api.latest import io
 
-# 会话级「内容寻址」共享 temp 存储：与 ImageCachePreview 轻量模式共用同一份去重索引
+# 会话级「内容寻址」共享存储：与 ImageCachePreview（轻量/完整模式）共用同一份去重索引，
+# 命中时硬链接到自己命名路径（零拷贝，文件名形式不变，磁盘只占一份）
 try:
     from .shared_temp_store import meta_fingerprint, save_shared_png
 except ImportError:  # pragma: no cover  离线测试/非包上下文
@@ -112,8 +119,7 @@ def _png_metadata(pnginfo, prompt, extra_pnginfo, parameters=None):
 
 
 def _view_item(path):
-    """文件绝对路径 → 官方 /view 惯例项（相对 temp 目录拆 subfolder + filename）。
-    复用来的文件可能位于 temp 子目录（如 0DAYE_image_cache/），官方 /view 支持 temp 子目录。"""
+    """文件绝对路径 → 官方 /view 惯例项（相对 temp 目录拆 subfolder + filename）。"""
     temp_dir = folder_paths.get_temp_directory()
     try:
         rel = os.path.relpath(path, temp_dir)
@@ -125,25 +131,22 @@ def _view_item(path):
     return {"filename": os.path.basename(rel), "subfolder": os.path.dirname(rel) or "", "type": "temp"}
 
 
-# 预览图不带元数据 → 固定指纹，仅按像素去重
-_PREVIEW_FP = meta_fingerprint(None, None)
-
-
 def _save_temp_preview(t, prefix, prompt=None, extra_pnginfo=None, parameters=None):
     """单张图 → 预览项（下采样）+ 全分辨率项（含 prompt/workflow/参数串超集元数据）。
 
     全分辨率与预览文件统一经会话级共享存储落盘：同一批像素 + 同一工作流在本会话内
-    只编码一次，后到者（含 ImageCachePreview 的轻量模式）直接复用已有文件，跳过编码与写盘。
-    文件命名规则完全不变（官方计数命名 + _prev 后缀）；未触发下采样时两用途共用同一文件
-    （返回项无 full 子项，前端回退用预览项）。
+    只编码一次；命中时（含 ImageCachePreview 轻量/完整模式先存的文件）以 NTFS 硬链接
+    落到自己的官方计数命名路径——零拷贝，文件名形式不变，磁盘只占一份；链接失败
+    自动回退普通编码写盘。未触发下采样时两用途共用同一文件（返回项 full=None，
+    前端回退用预览项）。
     """
     orig_h, orig_w = int(t.shape[1]), int(t.shape[2])
     small = _downscale(t[:1].contiguous())
     downscaled = int(small.shape[2]) != orig_w or int(small.shape[1]) != orig_h
-    meta_fp = meta_fingerprint(prompt, extra_pnginfo)
+    meta_fp = meta_fingerprint(extra_pnginfo)
     full_t = t[0].contiguous()
-    # 预览与全分辨率共用一次计数（保持原有 _0000N_prev / _0000N_ 配对命名）；
-    # 命中复用时不会走到这里 → 不消耗计数器
+    # 预览与全分辨率共用一次计数（保持 _0000N_prev / _0000N_ 配对命名）；
+    # 命中也需目标路径做硬链接 → 计数器照常消耗（编号可能跳号，无影响）
     _naming = {}
 
     def _naming_once():
@@ -161,7 +164,7 @@ def _save_temp_preview(t, prefix, prompt=None, extra_pnginfo=None, parameters=No
         d, fn, cnt, _sub, _ = _naming_once()
         return os.path.join(d, f"{fn}_{cnt:05}_.png")
 
-    full_path = save_shared_png(full_t, meta_fp, _make_full, _write_full)
+    full_path, _ = save_shared_png(full_t, meta_fp, _make_full, _write_full)
     full_item = _view_item(full_path)
 
     if downscaled:
@@ -172,7 +175,7 @@ def _save_temp_preview(t, prefix, prompt=None, extra_pnginfo=None, parameters=No
             d, fn, cnt, _s, _ = _naming_once()
             return os.path.join(d, f"{fn}_{cnt:05}_prev.png")
 
-        prev_path = save_shared_png(small[0].contiguous(), _PREVIEW_FP, _make_prev, _write_prev)
+        prev_path, _ = save_shared_png(small[0].contiguous(), meta_fp, _make_prev, _write_prev)
         return {**_view_item(prev_path), "orig_width": orig_w, "orig_height": orig_h,
                 "full": full_item}
     return {**full_item, "orig_width": orig_w, "orig_height": orig_h, "full": None}

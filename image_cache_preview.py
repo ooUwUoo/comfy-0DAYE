@@ -45,11 +45,15 @@
   tf 标记随索引校验自然消失，菜单自动降级为只存预览图。代价：重启即失效（启动也清），
   且跑图期间 temp 持续累积到关闭才释放（用户已知情接受）。
 
-  2026-11-04 起改为「会话级内容寻址」：全分辨率 PNG 经 shared_temp_store 落盘，与
-  ImageCompare 共用同一份去重索引（同像素 + 同 prompt/workflow 本会话内只编码一次，
-  后到者直接复用已有文件、跳过编码）。索引里的 "tf" 由布尔改为实际相对文件名
-  （可能指向 temp 根或对比节点的 0DAYE_Compare_*_.png）；淘汰/清空不再删 temp 文件
-  （可能被其他组或对比节点共享引用），一律交给官方启动/关闭清理。
+  2026-11-05 起升级为「内容寻址 + NTFS 硬链接」：轻量/完整模式的全分辨率 PNG 均经
+  shared_temp_store 落盘，与 ImageCompare 共用同一份去重索引（同像素 + 同 workflow
+  本会话内只编码一次）。命中时后到者在**自己的命名路径**上创建硬链接（os.link）——
+  各节点文件名/目录形式不变，磁盘物理只占一份；链接失败自动回退普通写盘。
+  硬链接语义下每个消费者拥有自己的目录项：淘汰/清空照常删文件（只摘本组目录项），
+  被共享引用的数据随其他链接存活到 temp 官方清理才释放；完整模式的永久 _f 与对比
+  节点 A 图同像素时也只占一份磁盘（temp 清空后数据由 user 链接继续持有）。
+  去重键 = 像素哈希 + workflow 指纹（不含每轮 seed 的 API prompt，随机 seed 下
+  固定图去重照样生效）；参数串写文件但不参与键（复用文件的参数串可能是上次快照）。
 
 前端消费（web/image_cache.js）：
   execute 的 ui.items = [{id, w, h, f?}, ...]（当前抽屉全量，最新在前）驱动面板刷新；
@@ -138,13 +142,10 @@ def _load_index():
             groups[gid] = {"w": w, "h": h, "e": e}
             if os.path.isfile(_group_path(gid, e, "full")):
                 groups[gid]["f"] = 1
-            else:
-                # 轻量模式的会话级原图：tf 存实际相对文件名（可能指向共享复用来的文件，
-                # 位于 temp 根或别的子目录）；旧格式 tf=1 兜底默认 {gid}_f.png。
-                # 文件已不在（重启后官方已清空 temp）则丢弃标记
-                p = _temp_abs(info.get("tf"), gid) if info.get("tf") else None
-                if p and os.path.isfile(p):
-                    groups[gid]["tf"] = _temp_rel(p)
+            elif os.path.isfile(_temp_full_path(gid)):
+                # 轻量模式的会话级原图：文件恒在 {gid}_f.png 派生路径（硬链接落地），
+                # 已被官方清空（重启）则不恢复标记
+                groups[gid]["tf"] = 1
 
     drawers = {}
     raw_drawers = raw.get("drawers")
@@ -173,26 +174,6 @@ def _group_path(gid, ext, kind):
 def _temp_full_path(gid):
     """轻量模式的会话级临时原图默认路径（官方 temp 子目录，启动/关闭自动清空）。"""
     return os.path.join(TEMP_CACHE_DIR, f"{gid}_f.png")
-
-
-def _temp_rel(path):
-    """temp 内的绝对路径 → 相对 temp 目录的 posix 路径（索引里存这个：
-    复用来的文件可能位于 temp 根或别的子目录，存相对名才能跨目录还原）。"""
-    try:
-        rel = os.path.relpath(path, folder_paths.get_temp_directory())
-    except ValueError:  # 跨盘符（理论上不会发生）
-        return os.path.basename(path)
-    return rel.replace(os.sep, "/")
-
-
-def _temp_abs(tf, gid):
-    """索引里的 tf 标记 → 绝对路径。兼容旧格式：tf=1/True 时取默认 {gid}_f.png
-    （旧代码只记布尔；新代码记实际相对文件名，可能指向共享复用的文件）。"""
-    if tf in (1, True):
-        return _temp_full_path(gid)
-    if isinstance(tf, str) and tf:
-        return os.path.join(folder_paths.get_temp_directory(), tf.replace("/", os.sep))
-    return None
 
 
 # 模块级索引：启动时从磁盘恢复，每次新增/清空落盘
@@ -282,9 +263,10 @@ def _save_group(t, prompt=None, extra_pnginfo=None, parameters=None, store_full=
     {gid}_p: 大图（≤1024，节点内显示；嵌 CivitAI 参数串——JPG 走 EXIF UserComment / PNG 走 tEXt）
     {gid}_t: 小图（≤160，缩略图条；不嵌元数据）
     {gid}_f: 全分辨率 PNG 带工作流元数据（store_full=True 存到 image_cache/ 永久保留，info 带 "f"）；
-             store_full=False（轻量模式）经会话级共享存储写官方 temp（重启即清）；info 的 "tf"
-             记实际相对文件名——命中复用时可能指向 ImageCompare 或别的组已存的文件。
-             两者右键都能「保存 PNG 原图 / 保存 JPG」。"""
+             store_full=False（轻量模式）经会话级共享存储写官方 temp（重启即清），info 带 "tf"。
+             两种模式都经 shared_temp_store 内容寻址：命中时在各自命名路径上硬链接落地
+             （零拷贝，磁盘只占一份；与 ImageCompare 共享同一份索引）。两者右键都能
+             「保存 PNG 原图 / 保存 JPG」。"""
     try:
         pil = _to_pil(t)
         orig_w, orig_h = pil.size
@@ -311,24 +293,25 @@ def _save_group(t, prompt=None, extra_pnginfo=None, parameters=None, store_full=
         info = {"w": orig_w, "h": orig_h, "e": ext}
         pnginfo = PngInfo()
         _png_metadata(pnginfo, prompt, extra_pnginfo, parameters)
+
+        def _write_full(path, _pil=pil, _pi=pnginfo):
+            _pil.save(path, "PNG", pnginfo=_pi)
+
         if store_full:
-            pil.save(_group_path(gid, ext, "full"), "PNG", pnginfo=pnginfo)
+            # 完整模式：永久 _f 也经共享存储——命中时硬链接零拷贝（与对比节点 A 图
+            # 同像素只占一份磁盘）；temp 链接被官方清空后数据由本 user 链接继续持有。
+            mf = meta_fp or meta_fingerprint(extra_pnginfo)
+            save_shared_png(t, mf, lambda: _group_path(gid, ext, "full"), _write_full)
             info["f"] = 1
         else:
             # 轻量模式：全分辨率原图写官方 temp（启动/关闭自动清空，回收零代码）。
-            # 经会话级共享存储落盘：同像素 + 同工作流本会话内只编码一次，后到者直接复用
-            # （可能是 ImageCompare 先存的文件，也可能位于 temp 根而非本插件子目录）→
-            # info["tf"] 记实际相对文件名，group_file/右键菜单据此还原路径。
+            # 经共享存储落盘：命中时在 {gid}_f.png 派生路径上硬链接（零拷贝），
+            # 未命中正常编码写盘；文件恒在派生路径 → info["tf"] 只需布尔标记。
             # 失败仅告警：预览缓存已落盘，不因此整组失败
             try:
-                os.makedirs(TEMP_CACHE_DIR, exist_ok=True)
-                mf = meta_fp or meta_fingerprint(prompt, extra_pnginfo)
-
-                def _write(path, _pil=pil, _pi=pnginfo):
-                    _pil.save(path, "PNG", pnginfo=_pi)
-
-                path = save_shared_png(t, mf, lambda: _temp_full_path(gid), _write)
-                info["tf"] = _temp_rel(path)
+                mf = meta_fp or meta_fingerprint(extra_pnginfo)
+                save_shared_png(t, mf, lambda: _temp_full_path(gid), _write_full)
+                info["tf"] = 1
             except Exception as te:
                 print(f"[ImageCache] 警告：临时原图写入失败（不影响预览缓存）：{te}")
         return gid, info
@@ -338,9 +321,9 @@ def _save_group(t, prompt=None, extra_pnginfo=None, parameters=None, store_full=
 
 
 def _drop_group(gid):
-    """淘汰一组：删 user 目录下的永久文件（大图/小图/完整模式原图）+ 摘除所有抽屉里的引用。
-    temp 里的会话级原图不再删除——同一文件可能被其他组或 ImageCompare 复用，
-    留到官方启动/关闭清理（调用方须持 _LOCK）。"""
+    """淘汰一组：删 user 目录下的永久文件（大图/小图/完整模式原图）+ temp 会话原图 +
+    摘除所有抽屉里的引用。硬链接语义：删除只摘本组目录项，被 ImageCompare 等共享
+    引用的数据随其链接存活，互不影响（调用方须持 _LOCK）。"""
     info = _INDEX["groups"].pop(gid, None)
     if not info:
         return
@@ -349,6 +332,10 @@ def _drop_group(gid):
             os.remove(_group_path(gid, info.get("e", "jpg"), kind))
         except OSError:
             pass
+    try:
+        os.remove(_temp_full_path(gid))
+    except OSError:
+        pass
     for arr in _INDEX["drawers"].values():
         while gid in arr:
             arr.remove(gid)
@@ -375,10 +362,8 @@ def drawer_items(key):
                 it = {"id": gid, "w": info["w"], "h": info["h"]}
                 if info.get("f"):
                     it["f"] = 1
-                elif info.get("tf"):
-                    p = _temp_abs(info["tf"], gid)
-                    if p and os.path.isfile(p):
-                        it["tf"] = 1
+                elif info.get("tf") and os.path.isfile(_temp_full_path(gid)):
+                    it["tf"] = 1
                 out.append(it)
         return out
 
@@ -411,9 +396,9 @@ def group_file(gid, kind):
     if os.path.isfile(path):
         return path
     if kind == "full" and tf:
-        # 轻量模式：tf 记实际相对文件名，可能指向共享复用来的文件（temp 根/对比节点）
-        path = _temp_abs(tf, gid)
-        return path if path and os.path.isfile(path) else None
+        # 轻量模式：文件恒在 {gid}_f.png 派生路径（共享存储硬链接也落在这里）
+        path = _temp_full_path(gid)
+        return path if os.path.isfile(path) else None
     return None
 
 
@@ -574,8 +559,8 @@ class ImageCachePreview(io.ComfyNode):
         extra_pnginfo = getattr(hidden, "extra_pnginfo", None)
         unique_id = getattr(hidden, "unique_id", None)
         n = int(image.shape[0])
-        # 结构元数据指纹（prompt/workflow）：同一批只算一次，供全分辨率原图走共享去重
-        meta_fp = meta_fingerprint(prompt, extra_pnginfo)
+        # 工作流指纹（仅 extra_pnginfo，不含每轮 seed）：同一批只算一次，供全分辨率原图走共享去重
+        meta_fp = meta_fingerprint(extra_pnginfo)
         # CivitAI/A1111 参数串：同一批执行只提取一次（含模型/LoRA 哈希，有大文件 IO）。
         # 失败不致命——空串时仅不嵌参数串，图片照常缓存。
         parameters = ""
