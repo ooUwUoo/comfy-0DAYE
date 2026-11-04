@@ -11,6 +11,9 @@
   "0DAYE_ImageCompare": {
     "display_name": "图像对比"
   },
+  "0DAYE_ImageScaling": {
+    "display_name": "图像缩放"
+  },
   "0DAYE_ImageCachePreview": {
     "display_name": "图像缓存预览"
   }

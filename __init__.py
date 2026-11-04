@@ -22,6 +22,7 @@ from .save_image_metadata import (
     save_prefix_state as _sim_save_prefix_state,
 )
 from .image_compare import ImageCompare
+from .image_scaling import ImageScaling
 from .image_cache_preview import (
     ImageCachePreview,
     clear_drawer as _image_cache_clear_drawer,
@@ -524,7 +525,7 @@ WEB_DIRECTORY = "./web"
 
 class SplitInpaintExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [SplitInpaint, TextCacheWithHistory, SaveImageMetadata, ImageCompare, ImageCachePreview]
+        return [SplitInpaint, TextCacheWithHistory, SaveImageMetadata, ImageCompare, ImageScaling, ImageCachePreview]
 
 
 async def comfy_entrypoint() -> SplitInpaintExtension:
@@ -649,6 +650,7 @@ NODE_CLASS_MAPPINGS = {
     "TextCacheWithHistory": TextCacheWithHistory,
     "SaveImageMetadata": SaveImageMetadata,
     "0DAYE_ImageCompare": ImageCompare,
+    "0DAYE_ImageScaling": ImageScaling,
     "0DAYE_ImageCachePreview": ImageCachePreview,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -657,5 +659,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TextCacheWithHistory": "Text Cache",
     "SaveImageMetadata": "Save Image Metadata",
     "0DAYE_ImageCompare": "Image Compare",
+    "0DAYE_ImageScaling": "Image Scaling",
     "0DAYE_ImageCachePreview": "Image Cache Preview",
 }
