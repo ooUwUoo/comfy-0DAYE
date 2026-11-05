@@ -204,17 +204,27 @@ function renderBig(p) {
   st.index = idx;
   const it = st.items[idx];
   if (it) {
-    // gid 唯一且文件不再变化 → 同一 gid 不重复设 src（避免重复解码）
-    if (p.big.dataset.gid !== it.id) {
-      p.big.dataset.gid = it.id;
-      p.big.src = viewURL(it.id, "preview");
+    // 同 gid 且 src 未丢失时跳过（浏览器有 immutable 缓存，重复设值无网络开销）；
+    // 但 Vue 重建 img 后 src 为空、dataset.gid 也丢失，必须重设
+    const expected = viewURL(it.gid, "preview");
+    if (p.big.dataset.gid !== it.gid || p.big.getAttribute("src") !== expected) {
+      p.big.dataset.gid = it.gid;
+      p.big.src = expected;
     }
     p.badge.textContent = `${idx + 1}/${total}`;
   }
 }
 
 // —— 渲染：全量（大图 + 缩略图条 + 操作栏）——
+// Vue Nodes 2.0 可能重建 widget 内部 DOM（实测：stage/root 保留，img 被替换），
+// 导致 p.big 等引用指向已移除的旧元素。render 前统一刷新为当前文档中的元素。
 function render(p) {
+  const big = p.stage.querySelector("img");
+  if (big && big !== p.big) p.big = big;
+  const empty = p.stage.querySelector(".od-icp-empty");
+  if (empty && empty !== p.empty) p.empty = empty;
+  const badge = p.stage.querySelector(".od-icp-badge");
+  if (badge && badge !== p.badge) p.badge = badge;
   renderBig(p);
   renderThumbs(p);
   renderPager(p);
@@ -243,7 +253,7 @@ function renderThumbs(p) {
     box.title = `第 ${i + 1} 张（${it.w}×${it.h}）· 点击显示大图`;
     if (i === st.index) box.classList.add("on");
     const im = document.createElement("img");
-    im.src = viewURL(it.id, "thumb");
+    im.src = viewURL(it.gid, "thumb");
     im.loading = "lazy";
     im.draggable = false;
     box.appendChild(im);
@@ -373,12 +383,12 @@ function hasFull(it) {
 
 function openImage(it) {
   // f/tf → 全分辨率原图 PNG；否则 1024px 预览图
-  window.open(viewURL(it.id, hasFull(it) ? "full" : "preview"), "_blank");
+  window.open(viewURL(it.gid, hasFull(it) ? "full" : "preview"), "_blank");
 }
 async function copyImage(p, it) {
   try {
     // 优先原图像素；无原图降级为预览图（剪贴板本身不携带 PNG 元数据）
-    const png = await toPngBlob(await fetchBlob(it.id, hasFull(it) ? "full" : "preview"));
+    const png = await toPngBlob(await fetchBlob(it.gid, hasFull(it) ? "full" : "preview"));
     await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
     flashInfo(p, hasFull(it) ? "已复制原图到剪贴板" : "已复制预览图");
   } catch (e) {
@@ -391,11 +401,11 @@ async function saveImage(p, it, fmt) {
   try {
     let blob, ext, msg;
     if (fmt === "preview") {
-      blob = await fetchBlob(it.id, "preview");
+      blob = await fetchBlob(it.gid, "preview");
       ext = blob.type === "image/png" ? "png" : "jpg";
       msg = "已保存预览图（含 CivitAI 参数）";
     } else {
-      const r = await fetch(downloadURL(it.id, fmt));
+      const r = await fetch(downloadURL(it.gid, fmt));
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       blob = await r.blob();
       ext = fmt;
@@ -404,7 +414,7 @@ async function saveImage(p, it, fmt) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `0DAYE_cache_${it.id}.${ext}`;
+    a.download = `0DAYE_cache_${it.gid}.${ext}`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 3000);
     flashInfo(p, msg);
@@ -418,7 +428,7 @@ async function revealImage(it) {
     const r = await app.api.fetchApi("/comfy_0DAYE/image_cache/reveal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: it.id, kind: hasFull(it) ? "full" : "preview" }),
+      body: JSON.stringify({ id: it.gid, kind: hasFull(it) ? "full" : "preview" }),
     });
     if (!r.ok) throw new Error(String(r.status));
   } catch (e) {
@@ -648,15 +658,17 @@ function attachCache(node) {
 app.registerExtension({
   name: "0DAYE.ImageCachePreview.Panel",
 
-  // 执行完成：ui.items 为当前抽屉全量（最新在前）→ 覆盖面板并回到最新
+  // 执行完成：不直接信任事件里的 items——节点命中执行缓存时是回放旧快照，
+  // 期间可能已被全局池淘汰/清空，回放会让前端拿到已删除的 gid（裂图）。
+  // 改为拉取后端抽屉的权威清单（最新在前）。
   setup() {
     app.api.addEventListener("executed", (e) => {
       try {
         const id = e.detail?.node ?? e.detail?.display_node;
         const n = app.graph?.getNodeById?.(id);
         if (!n || (n.comfyClass !== NODE_NAME && n.type !== NODE_NAME)) return;
-        const items = e.detail?.output?.items;
-        if (Array.isArray(items)) setItems(n, items, false);
+        if (!e.detail?.output?.items) return; // 非本节点产出的 ui（如纯输入节点）
+        refreshItems(n);
       } catch (_) {}
     });
   },

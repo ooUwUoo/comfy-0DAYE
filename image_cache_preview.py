@@ -46,17 +46,29 @@
   且跑图期间 temp 持续累积到关闭才释放（用户已知情接受）。
 
   2026-11-05 起升级为「内容寻址 + NTFS 硬链接」：轻量/完整模式的全分辨率 PNG 均经
-  shared_temp_store 落盘，与 ImageCompare 共用同一份去重索引（同像素 + 同 workflow
-  本会话内只编码一次）。命中时后到者在**自己的命名路径**上创建硬链接（os.link）——
+  shared_temp_store 落盘，与 ImageCompare 共用同一份去重索引（同像素本会话内只编码
+  一次）。命中时后到者在**自己的命名路径**上创建硬链接（os.link）——
   各节点文件名/目录形式不变，磁盘物理只占一份；链接失败自动回退普通写盘。
   硬链接语义下每个消费者拥有自己的目录项：淘汰/清空照常删文件（只摘本组目录项），
   被共享引用的数据随其他链接存活到 temp 官方清理才释放；完整模式的永久 _f 与对比
   节点 A 图同像素时也只占一份磁盘（temp 清空后数据由 user 链接继续持有）。
-  去重键 = 像素哈希 + workflow 指纹（不含每轮 seed 的 API prompt，随机 seed 下
-  固定图去重照样生效）；参数串写文件但不参与键（复用文件的参数串可能是上次快照）。
+  去重键 = 纯像素哈希（2026-11-05 用户批准「方案 A」；曾用「像素 + workflow 指纹」
+  实测失效——前端工作流图每轮都在变，跨运行永不命中）；参数串写文件但不参与键
+  （复用文件的参数串可能是首次落盘快照）。
+
+抽屉层同像素去重（2026-11-05，文件级去重的配套补充）：
+  文件级硬链接只省磁盘，抽屉历史仍每轮新增 gid → 面板缩略图条同图堆积（用户实测
+  「每跑一次节点里就重复显示一次」）。现 execute 落盘前先算像素哈希，与本抽屉已有
+  条目的 info["px"] 比对：命中仅把该条目提到「最新」位（drawer[0]），不新建组、
+  不新增文件目录项；同 batch 内的重复图同样去重（新组即刻注册进索引）。px 随索引
+  持久化（_load_index 校验 40 位十六进制后保留）→ 跨重启仍去重。旧条目无 px 字段
+  只会首跑后再重复一次，之后纳入去重；已堆积的旧重复条目用面板「清空」一次性处理。
+  代价：命中复用的参数串/元数据沿用首次落盘快照（与文件级去重同一取舍）。
 
 前端消费（web/image_cache.js）：
-  execute 的 ui.items = [{id, w, h, f?}, ...]（当前抽屉全量，最新在前）驱动面板刷新；
+  execute 的 ui.items = [{gid, w, h, f?}, ...]（当前抽屉全量，最新在前）驱动面板刷新；
+  条目键名用 gid 而非 id：核心 register_cached_outputs 命中执行缓存时会剥掉所有
+  output 条目的 "id" 字段，导致缓存回放时前端拿不到图 id（大图/缩略图全裂）。
   图片经本文件末尾的自定义路由 /comfy_0DAYE/image_cache/view?id=&kind= 读取
   （不走官方 /view：官方只认 output/temp/input，读不到 user 目录）。
 """
@@ -86,9 +98,9 @@ except ImportError:  # pragma: no cover
 # 会话级「内容寻址」共享 temp 存储：与 ImageCompare 共用同一份去重索引
 # （同一张图先经本节点（轻量模式）再进对比节点时，只落一份全分辨率 PNG）
 try:
-    from .shared_temp_store import meta_fingerprint, save_shared_png
+    from .shared_temp_store import save_shared_png, pixel_hash
 except ImportError:  # pragma: no cover
-    from shared_temp_store import meta_fingerprint, save_shared_png
+    from shared_temp_store import save_shared_png, pixel_hash
 
 POOL_MAX = 300          # 全局图片池上限（组）；超出按 LRU 淘汰最旧
 HISTORY_MAX = 50        # 每个抽屉（节点）最多保留的条目数
@@ -107,6 +119,8 @@ TEMP_CACHE_DIR = os.path.join(folder_paths.get_temp_directory(), "0DAYE_image_ca
 
 # gid = 毫秒时间戳 + 随机数，前端直接用来拼 URL；只允许字母数字下划线（防路径穿越）
 _VALID_GID = re.compile(r"^[0-9A-Za-z_]+$")
+# 组信息里的像素哈希（sha1 十六进制，40 位小写），抽屉层同图去重用
+_VALID_PX = re.compile(r"^[0-9a-f]{40}$")
 
 _LOCK = threading.RLock()
 
@@ -140,6 +154,9 @@ def _load_index():
                     and os.path.isfile(_group_path(gid, e, "thumb"))):
                 continue
             groups[gid] = {"w": w, "h": h, "e": e}
+            px = info.get("px")
+            if isinstance(px, str) and _VALID_PX.match(px):
+                groups[gid]["px"] = px  # 保留像素哈希 → 抽屉去重跨重启仍有效
             if os.path.isfile(_group_path(gid, e, "full")):
                 groups[gid]["f"] = 1
             elif os.path.isfile(_temp_full_path(gid)):
@@ -257,8 +274,7 @@ def _jpeg_exif(parameters):
     return exif
 
 
-def _save_group(t, prompt=None, extra_pnginfo=None, parameters=None, store_full=True,
-                meta_fp=None):
+def _save_group(t, prompt=None, extra_pnginfo=None, parameters=None, store_full=True):
     """单张图落盘为一组文件，返回 (gid, info)；失败返回 (None, None)。
     {gid}_p: 大图（≤1024，节点内显示；嵌 CivitAI 参数串——JPG 走 EXIF UserComment / PNG 走 tEXt）
     {gid}_t: 小图（≤160，缩略图条；不嵌元数据）
@@ -300,8 +316,7 @@ def _save_group(t, prompt=None, extra_pnginfo=None, parameters=None, store_full=
         if store_full:
             # 完整模式：永久 _f 也经共享存储——命中时硬链接零拷贝（与对比节点 A 图
             # 同像素只占一份磁盘）；temp 链接被官方清空后数据由本 user 链接继续持有。
-            mf = meta_fp or meta_fingerprint(extra_pnginfo)
-            save_shared_png(t, mf, lambda: _group_path(gid, ext, "full"), _write_full)
+            save_shared_png(t, lambda: _group_path(gid, ext, "full"), _write_full)
             info["f"] = 1
         else:
             # 轻量模式：全分辨率原图写官方 temp（启动/关闭自动清空，回收零代码）。
@@ -309,8 +324,7 @@ def _save_group(t, prompt=None, extra_pnginfo=None, parameters=None, store_full=
             # 未命中正常编码写盘；文件恒在派生路径 → info["tf"] 只需布尔标记。
             # 失败仅告警：预览缓存已落盘，不因此整组失败
             try:
-                mf = meta_fp or meta_fingerprint(extra_pnginfo)
-                save_shared_png(t, mf, lambda: _temp_full_path(gid), _write_full)
+                save_shared_png(t, lambda: _temp_full_path(gid), _write_full)
                 info["tf"] = 1
             except Exception as te:
                 print(f"[ImageCache] 警告：临时原图写入失败（不影响预览缓存）：{te}")
@@ -350,7 +364,7 @@ def _prune_pool():
 
 def drawer_items(key):
     """只读：某抽屉的条目清单（最新在前），供前端面板在加载工作流/重启后恢复显示。
-    条目 {id, w, h, f?, tf?}——f=1 有永久全分辨率文件；tf=1 有会话级临时原图（轻量模式）。
+    条目 {gid, w, h, f?, tf?}——f=1 有永久全分辨率文件；tf=1 有会话级临时原图（轻量模式）。
     tf 实时校验文件是否还在（temp 目录可能被系统/用户清理），不在则不下发该标记。"""
     key = _norm_key(key)
     with _LOCK:
@@ -359,7 +373,10 @@ def drawer_items(key):
         for gid in ids:
             info = _INDEX["groups"].get(gid)
             if info:
-                it = {"id": gid, "w": info["w"], "h": info["h"]}
+                # 键名必须避开 "id"：ComfyUI 核心 register_cached_outputs 的 _strip_ids
+                # 会在节点命中执行缓存时删掉所有 output 条目的 "id"（它以为那是资管
+                # asset id），导致缓存回放时前端拿到 id=undefined、大图与缩略图全裂
+                it = {"gid": gid, "w": info["w"], "h": info["h"]}
                 if info.get("f"):
                     it["f"] = 1
                 elif info.get("tf") and os.path.isfile(_temp_full_path(gid)):
@@ -509,6 +526,7 @@ class ImageCachePreview(io.ComfyNode):
             description=(
                 "图像缓存预览：每张流经的图自动留档，大图下方缩略图条可回看翻页"
                 "（页容量随节点宽度自适应），点小图切大图，可上一张/下一张/清空；"
+                "同像素图不重复入档（自动复用已有条目）；"
                 "image 原样透传（原始分辨率）"
             ),
             inputs=[
@@ -559,8 +577,6 @@ class ImageCachePreview(io.ComfyNode):
         extra_pnginfo = getattr(hidden, "extra_pnginfo", None)
         unique_id = getattr(hidden, "unique_id", None)
         n = int(image.shape[0])
-        # 工作流指纹（仅 extra_pnginfo，不含每轮 seed）：同一批只算一次，供全分辨率原图走共享去重
-        meta_fp = meta_fingerprint(extra_pnginfo)
         # CivitAI/A1111 参数串：同一批执行只提取一次（含模型/LoRA 哈希，有大文件 IO）。
         # 失败不致命——空串时仅不嵌参数串，图片照常缓存。
         parameters = ""
@@ -570,26 +586,38 @@ class ImageCachePreview(io.ComfyNode):
                 _extract_info(prompt, unique_id, w, h, with_hash=True))
         except Exception as e:
             print(f"[ImageCache] 警告：CivitAI 参数串生成失败（不影响缓存）：{e}")
-        new_ids = []
-        new_infos = {}
-        # batch 内按原顺序记录：第一张放抽屉最前（=「最新」位，前端默认显示这张）
+        # batch 内逐张处理：先查抽屉层像素去重，命中则复用已有条目（提到「最新」位），
+        # 未命中才落盘新组。新组即刻注册进索引——同 batch 内的重复图也能去重。
         for i in range(n):
-            gid, info = _save_group(image[i].contiguous(), prompt, extra_pnginfo,
-                                    parameters, store_full=bool(store_full_image),
-                                    meta_fp=meta_fp)
+            t_i = image[i].contiguous()
+            try:
+                ph = pixel_hash(t_i)
+            except Exception:
+                ph = None
+            if ph is not None:
+                with _LOCK:
+                    drawer = _INDEX["drawers"].setdefault(key, [])
+                    hit = next((g for g in drawer
+                                if (_INDEX["groups"].get(g) or {}).get("px") == ph), None)
+                    if hit is not None:
+                        # 同像素已在抽屉：仅把它提到最前（=「最新」位），不新建组
+                        if drawer[0] != hit:
+                            drawer.remove(hit)
+                            drawer.insert(0, hit)
+                            _save_index()
+                        continue
+            gid, info = _save_group(t_i, prompt, extra_pnginfo,
+                                    parameters, store_full=bool(store_full_image))
             if gid:
-                new_ids.append(gid)
-                new_infos[gid] = info
-        with _LOCK:
-            for gid, info in new_infos.items():
-                _INDEX["groups"][gid] = info
-            if new_ids:
-                drawer = _INDEX["drawers"].setdefault(key, [])
-                drawer[0:0] = new_ids
-                del drawer[HISTORY_MAX:]
-            _prune_pool()
-            if new_ids:
-                _save_index()
-            items = drawer_items(key)
+                if ph is not None:
+                    info["px"] = ph
+                with _LOCK:
+                    _INDEX["groups"][gid] = info
+                    drawer = _INDEX["drawers"].setdefault(key, [])
+                    drawer.insert(0, gid)
+                    del drawer[HISTORY_MAX:]
+                    _prune_pool()
+                    _save_index()
+        items = drawer_items(key)
         # ui.items 必须是列表：后端会把每个 ui 值当可迭代对象展开成 output 数组
         return io.NodeOutput(image, ui={"items": items})
