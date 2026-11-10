@@ -11,7 +11,7 @@ Saves a main PNG plus an optional sidecar JPEG/WEBP (at most two formats, **no p
 | Input | Description |
 |---|---|
 | `images` | Images to save (passthrough) |
-| `filename_prefix` | Filename prefix. Supports the official `%date%` / `%batch_num%` placeholders plus `%seed% %steps% %cfg% %sampler% %scheduler% %denoise% %model% %width% %height% %prompt%`, and percentage truncation forms such as `%model20%` (first 20% of the model name's length; `%prompt15%` / `%sampler12%` / `%scheduler8%` likewise; any value 0–100, decimals allowed). Invalid characters become `-`, missing values become `unknown` |
+| `filename_prefix` | Filename prefix (default `image`). Supports the official `%date%` / `%batch_num%` placeholders plus `%seed% %steps% %cfg% %sampler% %scheduler% %denoise% %model% %width% %height% %prompt%`, and percentage truncation forms such as `%model20%` (first 20% of the model name's length; `%prompt15%` / `%sampler12%` / `%scheduler8%` likewise; any value 0–100, decimals allowed). Invalid characters become `-`, missing values become `unknown` |
 | `save_png` | Write the main PNG (default on) |
 | `extra_format` | Sidecar format: `不保存` (none) / `JPEG` / `WEBP` (default JPEG) — at most two formats total |
 | `mode` | `CivitAI 元数据` (CivitAI metadata, default) / `原生 ComfyUI` (native ComfyUI) — see below |
@@ -35,7 +35,7 @@ Override priority: manual inputs (the overrides above plus `positive_text` / `ne
 
 ## Outputs
 
-`images` (passthrough) and `parameters` (the A1111 parameter string actually written). No `ui` payload is returned, so the node has **no preview window**.
+`images` (passthrough) and `parameters` (the A1111 parameter string actually written). The node has **no preview window** (that stays unchanged: the `ui` payload only carries a single `filename_prefix` string entry so the front-end gets the "node executed" notification — it never renders an image preview).
 
 ## Metadata Modes (`mode`)
 
@@ -69,9 +69,9 @@ Fully static — reads the hidden prompt graph, never triggers execution.
 
 ## Prefix Helper (front-end panel below `filename_prefix`)
 
-- **One-click dropdown**: "最近使用" (recent, 5 entries recorded automatically after each actual run) + "我的模板" (my templates — click 「存」 to store the current prefix as a template; select a template and click 「删」 to remove it).
+- **One-click dropdown**: "最近使用" (recent, 5 entries recorded automatically after each actual run — the **raw template** including `%date%` and other placeholders; values identical to the default `image` are not recorded) + "我的模板" (my templates — click 「存」 to store the current prefix as a template; select a template and click 「删」 to remove it).
 - **Placeholder chips**: click to append any of the 13 placeholders (`%seed%` etc., including the percentage-truncation example `%model40%`) to the end of the prefix — no need to memorize the rules.
-- **New nodes auto-fill** the most recently used prefix (falls back to `ComfyUI_Meta` when there is no history); loading a workflow always keeps its saved value.
+- **New nodes auto-fill** the most recently used prefix (falls back to the default `image` when there is no history); loading a workflow always keeps its saved value. Nodes in older workflows still holding the previous default `ComfyUI_Meta` are switched to `image` on load — user-customized values are never touched.
 - Persisted to `ComfyUI/user/0DAYE/save_image_metadata_prefix.json` (survives plugin updates/reinstalls); if the backend route is unavailable the panel degrades to in-memory state and saving itself is unaffected.
 
 ## Known Limits

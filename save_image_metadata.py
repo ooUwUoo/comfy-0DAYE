@@ -917,7 +917,7 @@ class SaveImageMetadata(io.ComfyNode):
                 io.Image.Input("images", tooltip="要保存的图像（支持批次）"),
                 io.String.Input(
                     "filename_prefix",
-                    default="ComfyUI_Meta",
+                    default="image",
                     tooltip="文件名前缀，可含子目录；占位符：官方 %date:yyyy-MM-dd%、%batch_num%，"
                             "本节点另支持 %seed% %steps% %cfg% %sampler% %scheduler% %denoise% %model% %width% %height% %prompt%，"
                             "以及百分比截断写法 %model20%（取模型名称前 20% 长度，另支持 %prompt15% %sampler12% %scheduler8%）",
@@ -1034,7 +1034,7 @@ class SaveImageMetadata(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, filename_prefix="ComfyUI_Meta",
+    def execute(cls, images, filename_prefix="image",
                 save_png=True, extra_format="JPEG", mode="CivitAI 元数据",
                 embed_parameters=True, embed_lora=True, embed_workflow=False,
                 save_workflow_json=False,
@@ -1082,6 +1082,9 @@ class SaveImageMetadata(io.ComfyNode):
         if isinstance(lora_override, str) and lora_override.strip():
             info["loras"] = _parse_lora_override(lora_override, with_hash=write_meta)
 
+        # 原始模板（保留 %date% 等占位符）留给前端「前缀助手」记录历史：必须是模板本身，
+        # 展开后的实际路径含日期/种子等死值，复用会写错
+        raw_prefix = filename_prefix if isinstance(filename_prefix, str) else ""
         filename_prefix = _apply_filename_placeholders(filename_prefix, info)
 
         output_dir = folder_paths.get_output_directory()
@@ -1162,5 +1165,7 @@ class SaveImageMetadata(io.ComfyNode):
 
             counter += 1  # 同一张图的两种格式共用编号，下一张图再递增
 
-        # 不返回 ui 数据：只存盘，节点上不出预览图片窗口（预览请接官方 Preview Image）
-        return io.NodeOutput(images, params)
+        # 返回 ui：节点本身仍无预览窗口（filename_prefix 是纯字符串条目，不触发图片预览）。
+        # 关键：execute 是类方法且必须让后端广播 executed 事件（output_ui 为空则 ComfyUI 不广播），
+        # 前端「前缀助手」靠该事件把本次实际使用的前缀写入历史 —— 同 text_cache 的既有约定。
+        return io.NodeOutput(images, params, ui={"filename_prefix": [raw_prefix]})

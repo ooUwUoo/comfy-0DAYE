@@ -10,6 +10,8 @@ import { collapseFit, installCollapseFit, onEngineSwitch } from "./od_engine.js"
 // ③ filename_prefix「前缀助手」面板：下拉选「最近使用(5)/我的模板」一键写入 + 占位符 chips 追加；
 //    数据经 GET/POST /comfy_0DAYE/save_image/prefix_state 持久化到服务端 user/0DAYE/（插件更新不丢），
 //    路由不可用时降级为内存态（面板照常可用，只是不持久）。所有操作最终都是写原 widget 值。
+//    「最近使用」由后端 execute() 返回的 ui.filename_prefix（原始模板值）经 executed 事件记录；
+//    与默认值（image）相同的不记录，旧版默认值 ComfyUI_Meta 在加载时一次性迁移。
 // ④ advanced 折叠兜底：后端 13 个控件声明 advanced=True，但新前端 V1→V2 转换层可能丢标记
 //    （TextCache 同构 config 实测中招），节点创建/加载后补写 _visibility.surfaces（见 ADV_WIDGETS）。
 const DEFAULT_W = 295;
@@ -23,7 +25,8 @@ const PREFIX_PANEL_H = 96;
 const PREFIX_HISTORY_MAX = 5;
 const PREFIX_TEMPLATES_MAX = 10;
 const PREFIX_STATE_URL = "/comfy_0DAYE/save_image/prefix_state";
-const PREFIX_DEFAULT_VALUE = "ComfyUI_Meta"; // 后端 filename_prefix 默认值（自动填入时的判定基准）
+const PREFIX_DEFAULT_VALUE = "image"; // 后端 filename_prefix 默认值（自动填入与「默认值不入历史」的判定基准）
+const PREFIX_LEGACY_DEFAULT = "ComfyUI_Meta"; // 旧版默认值：仅在加载老工作流时一次性迁移，其余场合只读
 const PLACEHOLDER_CHIPS = [
     "%seed%", "%steps%", "%cfg%", "%sampler%", "%scheduler%", "%denoise%",
     "%model%", "%model40%", "%width%", "%height%", "%prompt%", "%date:yyyy-MM-dd%", "%batch_num%",
@@ -119,14 +122,28 @@ function ensurePrefixStyle() {
 const prefixState = { loaded: false, history: [], templates: [] };
 let prefixStatePromise = null;
 
+// 并集去重（本地在前=更新）：GET 在途期间记录/新增的条目不能被服务端结果整体覆盖
+function mergeStrList(local, remote, cap) {
+    const out = [];
+    for (const s of [...local, ...remote]) {
+        if (typeof s === "string" && s && !out.includes(s)) out.push(s);
+        if (out.length >= cap) break;
+    }
+    return out;
+}
+
 function loadPrefixState() {
     if (!prefixStatePromise) {
         prefixStatePromise = fetch(PREFIX_STATE_URL)
             .then((r) => (r.ok ? r.json() : null))
             .then((d) => {
                 if (d && Array.isArray(d.history) && Array.isArray(d.templates)) {
-                    prefixState.history = d.history.filter((s) => typeof s === "string" && s).slice(0, PREFIX_HISTORY_MAX);
-                    prefixState.templates = d.templates.filter((s) => typeof s === "string" && s).slice(0, PREFIX_TEMPLATES_MAX);
+                    // 默认值（含旧版默认值）不进历史：历史只留用户实际自定义过的前缀
+                    const hist = d.history.filter(
+                        (s) => typeof s === "string" && s && s !== PREFIX_DEFAULT_VALUE && s !== PREFIX_LEGACY_DEFAULT
+                    );
+                    prefixState.history = mergeStrList(prefixState.history, hist, PREFIX_HISTORY_MAX);
+                    prefixState.templates = mergeStrList(prefixState.templates, d.templates, PREFIX_TEMPLATES_MAX);
                 }
                 prefixState.loaded = true;
                 return prefixState;
@@ -148,8 +165,14 @@ function persistPrefixState() {
 }
 
 // 记录一次实际执行使用的 prefix（executed 事件调用）：去重、新的在前、截到上限
+// 默认值不入历史；GET 未返回时先等 load 完成再记，避免刚记的条目被服务端结果覆盖
 function recordPrefixHistory(v) {
     if (typeof v !== "string" || !v) return;
+    if (v === PREFIX_DEFAULT_VALUE || v === PREFIX_LEGACY_DEFAULT) return;
+    if (!prefixState.loaded) {
+        loadPrefixState().then(() => recordPrefixHistory(v));
+        return;
+    }
     const i = prefixState.history.indexOf(v);
     if (i >= 0) prefixState.history.splice(i, 1);
     prefixState.history.unshift(v);
@@ -310,6 +333,12 @@ function ensurePanelSpace(node) {
     if (h) node.setSize([node.size[0], h + PREFIX_PANEL_H]);
 }
 
+// 旧版默认值一次性迁移：仅当值仍是旧默认（用户没改过）才换成新默认，已自定义的值一律不动
+function migrateLegacyDefault(node) {
+    const fw = findWidget(node, "filename_prefix");
+    if (fw && String(fw.value ?? "") === PREFIX_LEGACY_DEFAULT) fw.value = PREFIX_DEFAULT_VALUE;
+}
+
 app.registerExtension({
     name: "0DAYE.SaveImageMetadata.Defaults",
 
@@ -330,8 +359,14 @@ app.registerExtension({
                 const id = e.detail?.node ?? e.detail?.display_node;
                 const n = app.graph?.getNodeById?.(id);
                 if (!n || (n.comfyClass !== "SaveImageMetadata" && n.type !== "SaveImageMetadata")) return;
+                // 优先用后端返回的原始模板值（filename_prefix 被拖成输入端口时 widget 值可能过期），
+                // 取不到再回退当前 widget 值
+                const fromEvent = e.detail?.output?.filename_prefix;
                 const fw = findWidget(n, "filename_prefix");
-                recordPrefixHistory(String(fw?.value ?? ""));
+                const v = Array.isArray(fromEvent) && typeof fromEvent[0] === "string"
+                    ? fromEvent[0]
+                    : String(fw?.value ?? "");
+                recordPrefixHistory(v);
             } catch (_) {}
         });
     },
@@ -385,6 +420,7 @@ app.registerExtension({
                 applyModeState(this);
                 attachPrefixHelper(this);
                 ensurePanelSpace(this);
+                migrateLegacyDefault(this); // 仍是旧默认值才迁移（加载/粘贴），自定义值不动
                 applyAdvancedFallback(this); // advanced 折叠兜底（幂等）
                 installCollapseFit(this); // 只装访问器不收缩：加载节点尊重保存尺寸，后续手动折叠才收缩
             } catch (_) {}
