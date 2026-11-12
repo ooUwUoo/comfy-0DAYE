@@ -67,12 +67,22 @@ Fully static — reads the hidden prompt graph, never triggers execution.
 - JPEG/WEBP: EXIF UserComment (0x9286), encoded like piexif/A1111 (ASCII prefix or UNICODE prefix + UTF-16 with BOM); the ~64KB EXIF segment limit means the workflow is not embedded. Both formats of the same image share one counter.
 - Standalone workflow JSON (when `save_workflow_json` is on): named after the image with `.json` extension, content taken from `extra_pnginfo.workflow` (UI format, draggable back to restore); sanitized via `_sanitize_obj` (same rules as the PNG embedding); write failures only log a warning and do not abort.
 
-## Prefix Helper (front-end panel below `filename_prefix`)
+## Path Labels (front-end panel below `filename_prefix`)
 
-- **One-click dropdown**: "最近使用" (recent, 5 entries recorded automatically after each actual run — the **raw template** including `%date%` and other placeholders; values identical to the default `image` are not recorded) + "我的模板" (my templates — click 「存」 to store the current prefix as a template; select a template and click 「删」 to remove it).
-- **Placeholder chips**: click to append any of the 13 placeholders (`%seed%` etc., including the percentage-truncation example `%model40%`) to the end of the prefix — no need to memorize the rules.
+The panel has two states — collapsed (56px) and expanded (140px, toggled by `▾ 展开` / `▴ 收起`). **Collapsed (the default) shows only the header row and two dropdowns** — "最近使用" (Recent) and "我的模板" (My Templates). Picking an entry **writes it straight into the `filename_prefix` box above** — no more "load into draft, then apply". Label selection and the draft editor live inside the expanded state. (Heights match in both engines — legacy LiteGraph and Nodes 2.0 — and both dropdowns are fully visible when collapsed.)
+
+- **Two dropdowns**: `最近使用 (n) ▾` (recorded on every real run and on every apply, max 10) and `我的模板 (n) ▾` (max 10, each row has a `删` delete button). Every entry shows the full path (wrapped), so nothing is truncated the way a native `<select>` was; one click applies it immediately.
+- **Expanded state**: the draft editor comes first (`Ctrl+Enter` equals clicking 「应用」), and below it one row with `标签 (n) ▾` + 「应用」 + 「存模板」 side by side (the label button takes the remaining width, so its text is never ellipsized).
+- **The label dropdown**: built-in placeholders and your own labels are one ordered list — `%seed%`, `%model40%`, `/myfolder` all live in it, and every entry is editable:
+  - **Click a label = insert into the draft and close the popup**: at the caret when the edit box has focus, otherwise at the caret position you last left it (only falling back to the end when nothing is remembered). The draft updates visibly and the orange `● 未应用` badge lights up until you press 「应用」. It never overwrites the whole path.
+  - **Drag to reorder**: press and slide any row to a new position; the order is saved automatically (it is still your order next time).
+  - **`✎` edit**: rename in place (Enter saves, Esc cancels, blur also saves), up to 200 characters; renaming onto an existing label merges them instead of creating a duplicate.
+  - **`×` delete**: remove any label, built-in placeholders included; `恢复默认` (restore defaults) at the bottom appends the missing built-in placeholders back at the end without touching other labels.
+  - **`＋ 新建标签`**: add a custom label (max 40 in total, de-duplicated).
+- **Draft & apply**: 「应用」 writes the draft into `filename_prefix` and records a "recent" entry; an orange `● 未应用` badge lights up in the header while there are unapplied edits.
+- **存模板** stores the current draft as a template (max 10) that can then be applied with one click from the dropdown.
 - **New nodes auto-fill** the most recently used prefix (falls back to the default `image` when there is no history); loading a workflow always keeps its saved value. Nodes in older workflows still holding the previous default `ComfyUI_Meta` are switched to `image` on load — user-customized values are never touched.
-- Persisted to `ComfyUI/user/0DAYE/save_image_metadata_prefix.json` (survives plugin updates/reinstalls); if the backend route is unavailable the panel degrades to in-memory state and saving itself is unaffected.
+- The default value `image` is never recorded. Data is persisted to `ComfyUI/user/0DAYE/save_image_metadata_prefix.json` (three arrays: recent / templates / ordered label list; survives plugin updates and reinstalls). Older files only carry the "custom labels" array — on load it is merged with the built-in placeholders into the new list, with your own labels preserved at the end. If the backend route is unavailable the panel degrades to in-memory state and saving itself is unaffected.
 
 ## Known Limits
 

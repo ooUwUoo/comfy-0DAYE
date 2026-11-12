@@ -42,6 +42,7 @@ from comfy.cli_args import args
 from comfy_api.latest import io
 
 from .text_cache import USER_DATA_DIR, latest_history_text
+from .shared_temp_store import PNG_COMPRESS_LEVEL, write_png
 
 # ---------------------------------------------------------------------------
 # 静态图追溯工具（全部只读 hidden prompt 字典，不触发任何执行）
@@ -507,26 +508,70 @@ def _find_model_path(filename, kinds):
     return None
 
 
-def _sha256_10(path):
-    """模型文件 sha256 前 10 位（AutoV2，CivitAI 识别用）。
-    结果写 <文件>.sha256 边车缓存（与 Universal 版同约定），只算一次；失败静默返回 None。"""
-    cache = path + ".sha256"
+# 模型哈希缓存：新位置在 user/0DAYE/model_hashes/（模型盘只读、网络盘也能缓存），
+# 同时兼容读取旧版写在模型文件旁的 <模型>.sha256。
+_MODEL_HASH_DIR = os.path.join(USER_DATA_DIR, "model_hashes")
+_MODEL_HASH_MEM = {}  # 绝对路径 -> hash10：侧车写失败时的进程内兜底，避免每次保存重算
+_HASH_MB_PER_SEC = 300  # 本机 sha256 实测约 300 MB/s（CPU 受限），仅用于首次计算耗时提示
+
+
+def _hash_cache_file(path):
+    """模型路径 → 用户目录下的侧车文件名（路径做 sha1，避免超长/非法字符）。"""
+    key = hashlib.sha1(os.path.normcase(os.path.abspath(path)).encode("utf-8")).hexdigest()
+    return os.path.join(_MODEL_HASH_DIR, key + ".sha256")
+
+
+def _read_hash_cache(path, cache):
+    """读侧车：先新位置，再旧版 <模型>.sha256；都没有/内容非法返回 None。"""
+    for f in (cache, path + ".sha256"):
+        try:
+            with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                token = fh.read().strip().split()
+        except OSError:
+            continue
+        if token and len(token[0]) >= 10:
+            return token[0][:10]
+    return None
+
+
+def _write_hash_cache(cache, digest):
+    """原子写侧车（tmp + replace）。失败返回 False——调用方已写进程内缓存，不影响本次结果。"""
     try:
-        if os.path.isfile(cache):
-            with open(cache, "r", encoding="utf-8", errors="ignore") as f:
-                token = f.read().strip().split()
-            if token and len(token[0]) >= 10:
-                return token[0][:10]
+        os.makedirs(_MODEL_HASH_DIR, exist_ok=True)
+        tmp = cache + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(digest)
+        os.replace(tmp, cache)
+        return True
+    except OSError:
+        return False
+
+
+def _sha256_10(path):
+    """模型文件 sha256 前 10 位（AutoV2，CivitAI 识别用）。只算一次，命中顺序：
+    进程内缓存 → user/0DAYE/model_hashes 侧车 → 旧版 <模型>.sha256。
+    首次计算要整文件读一遍（本机约 300 MB/s，12GB 模型约 40 秒），会先打印预计耗时；
+    侧车写不进去（只读/网络盘）时退回进程内缓存，避免每次保存重复计算。失败静默返回 None。"""
+    mem = _MODEL_HASH_MEM.get(path)
+    if mem:
+        return mem
+    cache = _hash_cache_file(path)
+    hit = _read_hash_cache(path, cache)
+    if hit:
+        _MODEL_HASH_MEM[path] = hit
+        return hit
+    try:
+        size = os.path.getsize(path)
+        print(f"[SaveImageMetadata] 首次计算模型哈希：{os.path.basename(path)}"
+              f"（{size / (1 << 30):.2f} GB，预计约 {size / (1 << 20) / _HASH_MB_PER_SEC:.0f} 秒，"
+              f"结果缓存后不再重算）")
         h = hashlib.sha256()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
         digest = h.hexdigest()
-        try:
-            with open(cache, "w", encoding="utf-8") as f:
-                f.write(digest)
-        except OSError:
-            pass
+        _MODEL_HASH_MEM[path] = digest[:10]
+        _write_hash_cache(cache, digest)
         return digest[:10]
     except OSError:
         return None
@@ -719,23 +764,38 @@ def _apply_filename_placeholders(prefix, info):
 
 
 # ---------------------------------------------------------------------------
-# 前端「前缀助手」面板的状态持久化（用户私有数据，仅存 filename_prefix 历史与自定义模板）
+# 前端「路径标签」面板的状态持久化（用户私有数据：filename_prefix 历史 / 我的模板 / 有序标签表）
 # 存 ComfyUI/user/0DAYE/save_image_metadata_prefix.json：插件更新/重装/换浏览器均不丢。
 # 读写只经 __init__.py 的 HTTP 路由（GET/POST /comfy_0DAYE/save_image/prefix_state）。
 # ---------------------------------------------------------------------------
 
-PREFIX_HISTORY_MAX = 5  # 最近使用条数上限（下拉别太长）
+PREFIX_HISTORY_MAX = 10  # 最近使用条数上限（下拉别太长；2026-11-13 用户要求 5→10）
 PREFIX_TEMPLATES_MAX = 10  # 自定义模板条数上限
+PREFIX_TAGS_MAX = 40  # 路径标签总条数上限（内置占位符与自定义标签合并成一个有序列表）
+PREFIX_LABELS_MAX = 20  # 旧版「仅自定义标签」上限（现在只用作向后兼容镜像的条数）
+PREFIX_LABEL_MAX_LEN = 200  # 单条标签最大字符数
+
+# 路径标签默认表（**单一数据源**；前端 FALLBACK_TAGS 只是状态路由不可用时的离线镜像）。
+# 首次使用（或老文件还没有 tags 键）时按这个顺序铺开；用户可随意编辑/删除/拖动排序，
+# 前端「恢复默认」会把缺失的这些补回列表末尾。
+PREFIX_DEFAULT_TAGS = [
+    "%seed%", "%steps%", "%cfg%", "%sampler%", "%scheduler%", "%denoise%",
+    "%model%", "%model40%", "%width%", "%height%", "%prompt%", "%date:yyyy-MM-dd%", "%batch_num%",
+]
 
 _PREFIX_STATE_FILE = os.path.join(USER_DATA_DIR, "save_image_metadata_prefix.json")
 
 
-def _prefix_str_list(v, cap):
-    """只收非空字符串、保序去重、截到 cap 条；其它一律丢弃。"""
+def _prefix_str_list(v, cap, max_len=None):
+    """只收非空字符串、保序去重、截到 cap 条（max_len 给定时单条截断）；其它一律丢弃。"""
     out = []
     if isinstance(v, list):
         for s in v:
-            if isinstance(s, str) and s and s not in out:
+            if not isinstance(s, str) or not s:
+                continue
+            if max_len:
+                s = s[:max_len]
+            if s not in out:
                 out.append(s)
             if len(out) >= cap:
                 break
@@ -743,7 +803,9 @@ def _prefix_str_list(v, cap):
 
 
 def load_prefix_state():
-    """读前缀助手状态 {"history": [...], "templates": [...]}；文件缺失/损坏 → 全空。"""
+    """读前缀助手状态 {"history": [...], "templates": [...], "tags": [...], "default_tags": [...]}；
+    文件缺失/损坏 → 全空；老文件没有 tags 键 → 用默认标签表 + 旧 labels 合成（一次性迁移，
+    之后顺序完全由用户拖动决定）；空 tags 列表按用户「删光了」如实保留，不强行复活默认表。"""
     try:
         with open(_PREFIX_STATE_FILE, "r", encoding="utf-8") as f:
             raw = json.load(f)
@@ -751,19 +813,40 @@ def load_prefix_state():
         raw = None
     if not isinstance(raw, dict):
         raw = {}
+    labels = _prefix_str_list(raw.get("labels"), PREFIX_LABELS_MAX, PREFIX_LABEL_MAX_LEN)
+    raw_tags = raw.get("tags")
+    if isinstance(raw_tags, list):
+        tags = _prefix_str_list(raw_tags, PREFIX_TAGS_MAX, PREFIX_LABEL_MAX_LEN)
+    else:
+        # 迁移：老版本内置占位符是前端常量、文件里只存自定义 labels → 合成默认表 + 旧自定义标签
+        tags = _prefix_str_list(list(PREFIX_DEFAULT_TAGS) + labels, PREFIX_TAGS_MAX, PREFIX_LABEL_MAX_LEN)
     return {
         "history": _prefix_str_list(raw.get("history"), PREFIX_HISTORY_MAX),
         "templates": _prefix_str_list(raw.get("templates"), PREFIX_TEMPLATES_MAX),
+        "tags": tags,
+        "labels": labels,
+        "default_tags": list(PREFIX_DEFAULT_TAGS),
     }
 
 
 def save_prefix_state(state):
-    """写前缀助手状态（原子写：tmp + replace；目录不存在自动建）。返回是否成功。"""
+    """写前缀助手状态（原子写：tmp + replace；目录不存在自动建）。返回是否成功。
+    `tags` 是有序全量标签表（含内置默认标签）；`labels` 只是给旧版前端读的兼容镜像，
+    由 tags 里剔掉默认标签后派生（老前端拿它当「我的标签」，行为仍然正确）。"""
     if not isinstance(state, dict):
         return False
+    if "tags" in state:
+        tags = _prefix_str_list(state.get("tags"), PREFIX_TAGS_MAX, PREFIX_LABEL_MAX_LEN)
+        labels = [t for t in tags if t not in PREFIX_DEFAULT_TAGS][:PREFIX_LABELS_MAX]
+    else:
+        # 旧版前端只会上报 labels（内置占位符是它的常量）→ 反向合成，避免把默认标签写丢
+        labels = _prefix_str_list(state.get("labels"), PREFIX_LABELS_MAX, PREFIX_LABEL_MAX_LEN)
+        tags = _prefix_str_list(list(PREFIX_DEFAULT_TAGS) + labels, PREFIX_TAGS_MAX, PREFIX_LABEL_MAX_LEN)
     data = {
         "history": _prefix_str_list(state.get("history"), PREFIX_HISTORY_MAX),
         "templates": _prefix_str_list(state.get("templates"), PREFIX_TEMPLATES_MAX),
+        "tags": tags,
+        "labels": labels,
     }
     try:
         os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -1105,9 +1188,16 @@ class SaveImageMetadata(io.ComfyNode):
         # PNG 是否嵌工作流：原生模式强制嵌（官方行为）；CivitAI 模式看开关（默认关）
         write_workflow = write_meta and (native or embed_workflow)
 
-        # 脱敏只作用于「写入的数据」，不改原对象；结构保持一致，PNG 仍可拖回恢复
-        meta_prompt = _sanitize_obj(prompt) if (sanitize and prompt is not None) else prompt
-        meta_pnginfo = _sanitize_obj(extra_pnginfo) if (sanitize and extra_pnginfo) else extra_pnginfo
+        # 脱敏只作用于「写入的数据」，不改原对象；结构保持一致，PNG 仍可拖回恢复。
+        # 只在本轮确实要写入工作流（PNG 内嵌 / 独立 JSON）时才做整份深拷贝+正则扫描，
+        # 默认 CivitAI 模式（不嵌工作流）跳过，省掉每轮一次的整图遍历。
+        meta_prompt = prompt
+        meta_pnginfo = extra_pnginfo
+        if sanitize and (write_workflow or save_workflow_json):
+            if prompt is not None:
+                meta_prompt = _sanitize_obj(prompt)
+            if extra_pnginfo:
+                meta_pnginfo = _sanitize_obj(extra_pnginfo)
 
         # 画质：单控件文本（预设 95/85/78 或任意数值），_quality_value 取数字并钳 1–100、非法回退 85
         q_val = _quality_value(quality)
@@ -1116,8 +1206,8 @@ class SaveImageMetadata(io.ComfyNode):
             print("[SaveImageMetadata] 警告：save_png 关 且 附带格式=不保存，本次不保存任何文件")
 
         for batch_number, image in enumerate(images):
-            i = 255.0 * image.cpu().numpy()
-            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+            arr = np.clip(255.0 * image.cpu().numpy(), 0, 255).astype(np.uint8)
+            img = Image.fromarray(arr)
             base = filename.replace("%batch_num%", str(batch_number)) + f"_{counter:05}_"
 
             if save_png:
@@ -1131,7 +1221,10 @@ class SaveImageMetadata(io.ComfyNode):
                     if meta_pnginfo:
                         for key in meta_pnginfo:  # 与官方 SaveImage 同约定：可拖回恢复工作流
                             pnginfo.add_text(key, json.dumps(meta_pnginfo[key]))
-                img.save(os.path.join(full_output_folder, file), pnginfo=pnginfo, compress_level=6)
+                # 编码等级与官方 SaveImage 一致（4），并经会话级编码缓存：与图像缓存预览
+                # 节点串联时同像素只压缩一次，tEXt 仍由本节点在落盘时单独插入
+                write_png(os.path.join(full_output_folder, file), arr, img, pnginfo,
+                          compress_level=PNG_COMPRESS_LEVEL)
 
             if extra == "JPEG":
                 file = base + ".jpg"
@@ -1148,18 +1241,19 @@ class SaveImageMetadata(io.ComfyNode):
                 exif = Image.Exif()
                 if write_params:
                     exif.get_ifd(0x8769)[0x9286] = _user_comment_bytes(params)
+                # method=4 是 Pillow 的均衡档（默认值，显式写出避免版本差异）：
+                # WEBP 的耗时主要在编码器搜索强度，quality 保持用户画质档（默认 85）
                 img.save(os.path.join(full_output_folder, file), "WEBP",
-                         quality=q_val, exif=exif)
+                         quality=q_val, method=4, exif=exif)
 
-            # 独立工作流 JSON：与图片同名 .json（UI 格式，可拖回恢复）；脱敏与 PNG 内嵌一致
+            # 独立工作流 JSON：与图片同名 .json（UI 格式，可拖回恢复）；脱敏复用 PNG 那份结果
             if save_workflow_json and extra_pnginfo is not None:
-                wf_data = extra_pnginfo.get("workflow")
+                wf_data = (meta_pnginfo or {}).get("workflow")
                 if wf_data is not None:
                     json_file = base + ".json"
-                    wf_to_dump = _sanitize_obj(wf_data) if sanitize else wf_data
                     try:
                         with open(os.path.join(full_output_folder, json_file), "w", encoding="utf-8") as f:
-                            json.dump(wf_to_dump, f, ensure_ascii=False, indent=2)
+                            json.dump(wf_data, f, ensure_ascii=False, indent=2)
                     except OSError as e:
                         print(f"[SaveImageMetadata] 警告：工作流 JSON 保存失败：{e}")
 
